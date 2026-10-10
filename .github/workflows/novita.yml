@@ -2,7 +2,7 @@ name: Controlla novità IC Perasso
 
 on:
   schedule:
-    - cron: '0 */3 * * *' # Esegue ogni 3 ore
+       - cron: '0 * * * *' # Esegue ogni ora
   workflow_dispatch: # Permette l'esecuzione manuale da Actions
 
 permissions:
