@@ -1,6 +1,8 @@
 import os
 import json
 import re
+import html
+import xml.etree.ElementTree as ET
 import requests
 from bs4 import BeautifulSoup
 
@@ -9,6 +11,8 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 STATE_FILE = "sent_items.json"
+FEED_URL = "https://icperasso.edu.it/feed"
+ATOM_NS = "{http://www.w3.org/2005/Atom}"
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -110,22 +114,80 @@ def fetch_pn():
     print(f"📋 Atti unici identificati: {len(unique_items)}")
     return list(unique_items.values())
 
-def main():
-    state = load_state()
-    key = "bacheca_8"
-    
-    if key not in state:
-        state[key] = []
-    
+def _child(entry, *tags):
+    """Primo figlio dell'elemento con uno dei tag indicati (None se assente)."""
+    for tag in tags:
+        node = entry.find(tag)
+        if node is not None:
+            return node
+    return None
+
+def _entry_link(entry):
+    """Link di una voce RSS (<link>testo</link>) o Atom (<link href=... />)."""
+    for node in entry.findall("link") + entry.findall(f"{ATOM_NS}link"):
+        if node.get("href") and node.get("rel", "alternate") == "alternate":
+            return node.get("href").strip()
+        if node.text and node.text.strip():
+            return node.text.strip()
+    return None
+
+def fetch_feed(url=FEED_URL):
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        print(f"📡 Status HTTP feed: {resp.status_code}")
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+    except Exception as e:
+        print(f"❌ Errore durante la lettura del feed: {e}")
+        return []
+
+    entries = root.findall(".//item") or root.findall(f".//{ATOM_NS}entry")
+    unique_items = {}
+    for entry in entries:
+        link = _entry_link(entry)
+        if not link:
+            continue
+
+        id_node = _child(entry, "guid", f"{ATOM_NS}id")
+        item_id = (id_node.text or "").strip() if id_node is not None else ""
+        item_id = item_id or link
+
+        title_node = _child(entry, "title", f"{ATOM_NS}title")
+        title = " ".join((title_node.text or "").split()) if title_node is not None else ""
+        if not title:
+            title = "Nuova notizia"
+        if len(title) > 200:
+            title = title[:197] + "..."
+
+        if item_id not in unique_items:
+            unique_items[item_id] = {"id": item_id, "title": title, "link": link}
+
+    print(f"📋 Notizie uniche nel feed: {len(unique_items)}")
+    return list(unique_items.values())
+
+# Ogni fonte ha: chiave nello stato, etichetta del messaggio e funzione di lettura.
+# La funzione è chiamata tramite lambda per essere risolta a ogni esecuzione.
+SOURCES = [
+    {"key": "bacheca_8", "label": "📌 PN / Comunicazioni IC Perasso", "fetch": lambda: fetch_pn()},
+    {"key": "feed_icperasso", "label": "📰 News IC Perasso", "fetch": lambda: fetch_feed()},
+]
+
+def process_source(state, source):
+    key = source["key"]
+    state.setdefault(key, [])
     known_ids = set(state[key])
-    items = fetch_pn()
-    
+    items = source["fetch"]()
+
     new_items = [item for item in items if item["id"] not in known_ids]
-    
-    print(f"📊 Summary [📌 PN / Comunicazioni]: Letti {len(items)} | Nuovi da inviare {len(new_items)}")
+    print(f"📊 Summary [{source['label']}]: Letti {len(items)} | Nuovi da inviare {len(new_items)}")
 
     for item in reversed(new_items):
-        msg = f"<b>📌 PN / Comunicazioni IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
+        # Titolo e link vanno "escapati": con parse_mode HTML un carattere come & o <
+        # farebbe rifiutare il messaggio da Telegram.
+        title = html.escape(item["title"], quote=False)
+        link = html.escape(item["link"], quote=True)
+        msg = f"<b>{source['label']}</b>\n\n<a href='{link}'>{title}</a>"
         if send_telegram_message(msg):
             state[key].append(item["id"])
         else:
@@ -134,6 +196,10 @@ def main():
             print(f"⚠️ Invio fallito per l'atto {item['id']}: riproverò alla prossima esecuzione.")
             break
 
+def main():
+    state = load_state()
+    for source in SOURCES:
+        process_source(state, source)
     save_state(state)
 
 if __name__ == "__main__":
