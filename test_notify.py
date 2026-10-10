@@ -651,7 +651,9 @@ class MainTests(unittest.TestCase):
         item = dict(self.item(1), date="10/10/2026 12:30")
         send = self.run_main([item])
         msg = send.call_args.args[0]
-        self.assertTrue(msg.endswith("\n🗓 10/10/2026 12:30"))
+        self.assertIn("\n🗓 10/10/2026 12:30\n\n<a href=", msg)
+        self.assertLess(msg.index("🗓"), msg.index("<a href="))
+        self.assertTrue(msg.endswith("</a>"))
 
     def test_message_has_no_date_line_when_missing(self):
         send = self.run_main([self.item(1)])
