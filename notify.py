@@ -105,13 +105,16 @@ def extract_date_from_text(text, whole=False):
         result += f" {int(hour):02d}:{minute}"
     return result
 
+PUBLICATION_CELL_CLASS = "dataPubblicazioneOnline"  # colonna "data pubblicazione" di Nuvola
+
 def extract_row_date(row):
-    """Data di pubblicazione di una riga di tabella: la prima cella che contiene solo una data."""
-    for cell in row.find_all(["td", "th"]):
-        date = extract_date_from_text(cell.get_text(" ", strip=True), whole=True)
-        if date:
-            return date
-    return None
+    """Data di pubblicazione di una riga della bacheca: la cella della colonna
+    dataPubblicazioneOnline, se contiene solo una data. Le altre colonne con date
+    (registro, archiviazione) e le date citate nei titoli vengono ignorate."""
+    cell = row.find("td", class_=lambda c: c and PUBLICATION_CELL_CLASS in c)
+    if cell is None:
+        return None
+    return extract_date_from_text(cell.get_text(" ", strip=True), whole=True)
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -187,9 +190,6 @@ def fetch_pn():
             # Scansioniamo tutte le righe delle tabelle presenti nella bacheca
             rows = soup.find_all('tr')
             print(f"🔍 Righe tabella trovate nella pagina: {len(rows)}")
-            for sample in rows[:3]:
-                cells = [c.get_text(" ", strip=True)[:60] for c in sample.find_all(["td", "th"])]
-                print(f"🧪 Celle riga di esempio ({len(cells)}): {cells!r}")
             
             for row in rows:
                 links = row.find_all('a', href=True)
@@ -211,8 +211,6 @@ def fetch_pn():
                             clean_title = clean_title[:197] + "..."
                             
                         direct_link = f"https://nuvola.madisoft.it/bacheca-digitale/{doc_id}/documento/MIIC8GH008"
-                        if len(items) < 2:
-                            print(f"🧪 HTML riga atto {doc_id}: {str(row)[:1500]!r}")
                         items.append({"id": doc_id, "title": clean_title, "link": direct_link,
                                       "date": extract_row_date(row)})
                         break # Un solo ID valido per riga
@@ -298,9 +296,6 @@ def _parse_feed_xml(resp):
 
         date_node = _child(entry, "pubDate", f"{ATOM_NS}published", f"{ATOM_NS}updated")
         date = parse_feed_date(date_node.text) if date_node is not None else None
-        if not unique_items:
-            raw = date_node.text if date_node is not None else None
-            print(f"🧪 Prima voce del feed: data grezza {raw!r} -> {date!r}")
 
         if item_id not in unique_items:
             unique_items[item_id] = {"id": item_id, "title": title, "link": link, "date": date}
