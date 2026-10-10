@@ -105,12 +105,10 @@ def main():
         
         print(f"[{src['name']}] letti {len(items)}, nuovi da inviare {len(new_items)}")
 
-        is_first_run = len(known_ids) == 0 and len(state[key]) == 0
-
+        # Invierà subito tutto ciò che trova di nuovo/non ancora memorizzato
         for item in reversed(new_items):
-            if not is_first_run:
-                msg = f"<b>{src['name']} IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
-                send_telegram_message(msg)
+            msg = f"<b>{src['name']} IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
+            send_telegram_message(msg)
             state[key].append(item["id"])
 
     save_state(state)
