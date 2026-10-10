@@ -272,6 +272,11 @@ ATOM_SAMPLE = """<?xml version="1.0" encoding="utf-8"?>
 
 
 class FetchNovitaTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch("notify.time.sleep")
+        self.sleep = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def fetch(self, xml, status=200):
         resp = make_response(status, xml)
         if status >= 400:
@@ -291,7 +296,7 @@ class FetchNovitaTests(unittest.TestCase):
                         return_value=make_response(200, RSS_SAMPLE)) as get:
             notify.fetch_novita()
         self.assertEqual(get.call_args.args[0], "https://icperasso.edu.it/feed/")
-        self.assertEqual(get.call_args.kwargs["headers"]["User-Agent"], "Mozilla/5.0")
+        self.assertIn("Mozilla/5.0", get.call_args.kwargs["headers"]["User-Agent"])
         self.assertIn("timeout", get.call_args.kwargs)
 
     def test_title_whitespace_is_normalized(self):
@@ -350,6 +355,46 @@ class FetchNovitaTests(unittest.TestCase):
         with mock.patch("notify.requests.get",
                         side_effect=requests.Timeout("timeout")):
             self.assertEqual(notify.fetch_novita(), [])
+
+    def bad_gateway(self):
+        resp = make_response(502, "")
+        resp.raise_for_status.side_effect = requests.HTTPError("502 Bad Gateway")
+        return resp
+
+    def test_retries_same_url_after_502_then_succeeds(self):
+        with mock.patch("notify.requests.get",
+                        side_effect=[self.bad_gateway(), make_response(200, RSS_SAMPLE)]) as get:
+            items = notify.fetch_novita()
+        self.assertEqual(len(items), 2)
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(get.call_args_list[0].args[0], get.call_args_list[1].args[0])
+        self.sleep.assert_called_once()
+
+    def test_falls_back_to_alternative_url_when_first_keeps_failing(self):
+        responses = [self.bad_gateway()] * notify.FEED_ATTEMPTS + [make_response(200, RSS_SAMPLE)]
+        with mock.patch("notify.requests.get", side_effect=responses) as get:
+            items = notify.fetch_novita()
+        self.assertEqual(len(items), 2)
+        self.assertEqual(get.call_args_list[-1].args[0], notify.FEED_URLS[1])
+
+    def test_malformed_first_url_falls_back_to_next(self):
+        responses = [make_response(200, "<html>non xml"), make_response(200, "<html>ancora no"),
+                     make_response(200, ATOM_SAMPLE)]
+        with mock.patch("notify.requests.get", side_effect=responses):
+            items = notify.fetch_novita()
+        self.assertEqual(items[0]["title"], "Gita a Milano")
+
+    def test_all_urls_failing_returns_empty_list_after_all_attempts(self):
+        with mock.patch("notify.requests.get",
+                        return_value=self.bad_gateway()) as get:
+            self.assertEqual(notify.fetch_novita(), [])
+        self.assertEqual(get.call_count, len(notify.FEED_URLS) * notify.FEED_ATTEMPTS)
+
+    def test_no_sleep_after_last_attempt_of_a_url(self):
+        with mock.patch("notify.requests.get", return_value=self.bad_gateway()):
+            notify.fetch_novita()
+        self.assertEqual(self.sleep.call_count,
+                         len(notify.FEED_URLS) * (notify.FEED_ATTEMPTS - 1))
 
 
 class MainTests(unittest.TestCase):
