@@ -15,6 +15,9 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 STATE_FILE = "sent_items.json"
+SEND_DELAY = 3           # secondi di pausa tra due messaggi (Telegram: circa 20 al minuto per chat)
+MAX_SEND_ATTEMPTS = 3    # tentativi per ogni messaggio quando Telegram risponde 429
+MAX_RETRY_WAIT = 60      # attesa massima accettata per un nuovo tentativo, in secondi
 FEED_URL = "https://icperasso.edu.it/feed/"
 # Indirizzi alternativi dello stesso feed WordPress, provati in ordine se il primo non risponde.
 FEED_URLS = [
@@ -91,6 +94,19 @@ def save_state(state):
     except Exception as e:
         print(f"Errore nel salvataggio dello stato: {e}")
 
+def _retry_after(resp):
+    """Secondi di attesa richiesti da Telegram dopo un 429 (None se non indicati)."""
+    try:
+        value = resp.json().get("parameters", {}).get("retry_after")
+        if value is not None:
+            return float(value)
+    except Exception:
+        pass
+    try:
+        return float(resp.headers.get("Retry-After"))
+    except (TypeError, ValueError):
+        return None
+
 def send_telegram_message(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("❌ Token o Chat ID mancanti nei Secrets.")
@@ -102,14 +118,23 @@ def send_telegram_message(text):
         "parse_mode": "HTML",
         "disable_web_page_preview": True
     }
-    try:
-        response = requests.post(url, json=payload, timeout=10)
-        response.raise_for_status()
-        print("✅ Messaggio Telegram inviato!")
-        return True
-    except Exception as e:
-        print(f"❌ Errore invio Telegram: {e}")
-        return False
+    for attempt in range(1, MAX_SEND_ATTEMPTS + 1):
+        try:
+            response = requests.post(url, json=payload, timeout=10)
+            if response.status_code == 429 and attempt < MAX_SEND_ATTEMPTS:
+                wait = (_retry_after(response) or 5) + 1
+                if wait <= MAX_RETRY_WAIT:
+                    print(f"⏳ Telegram chiede di rallentare (429): attendo {wait:.0f}s e riprovo "
+                          f"({attempt}/{MAX_SEND_ATTEMPTS})")
+                    time.sleep(wait)
+                    continue
+            response.raise_for_status()
+            print("✅ Messaggio Telegram inviato!")
+            return True
+        except Exception as e:
+            print(f"❌ Errore invio Telegram: {e}")
+            return False
+    return False
 
 def fetch_pn():
     items = []
@@ -264,7 +289,9 @@ def process_source(state, source):
     new_items = [item for item in items if item["id"] not in known_ids]
     print(f"📊 Summary [{source['label']}]: Letti {len(items)} | Nuovi da inviare {len(new_items)}")
 
-    for item in reversed(new_items):
+    for n, item in enumerate(reversed(new_items)):
+        if n > 0:
+            time.sleep(SEND_DELAY)  # rispetta il limite di Telegram sui messaggi al minuto
         # Titolo e link vanno "escapati": con parse_mode HTML un carattere come & o <
         # farebbe rifiutare il messaggio da Telegram.
         title = html.escape(item["title"], quote=False)
