@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import requests
 from bs4 import BeautifulSoup
 
@@ -43,26 +44,9 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"❌ Errore invio Telegram: {e}")
 
-def fetch_novita():
+def fetch_pn():
     items = []
-    url = "https://icperasso.edu.it/feed/"
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.content, "xml")
-            for item in soup.find_all("item"):
-                title = item.title.text.strip() if item.title else "Senza titolo"
-                link = item.link.text.strip() if item.link else ""
-                guid = item.guid.text.strip() if item.guid else link
-                items.append({"id": guid, "title": title, "link": link})
-    except Exception as e:
-        print(f"Errore lettura Novità: {e}")
-    return items
-
-def fetch_albo():
-    items = []
-    category_id = "1"
+    category_id = "8"
     url = f"https://nuvola.madisoft.it/bacheca-digitale/bacheca/ricerca/MIIC8GH008/{category_id}/show"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     
@@ -72,16 +56,26 @@ def fetch_albo():
             soup = BeautifulSoup(resp.text, "html.parser")
             for a in soup.find_all('a', href=True):
                 href = a['href']
+                title = a.get_text(strip=True)
                 
-                # Filtriamo ed estraiamo solo gli atti effettivi in pubblicazione
-                if "/bacheca-digitale/bacheca/MIIC8GH008/" in href and "/IN_PUBBLICAZIONE/" in href:
-                    title = a.get_text(strip=True)
-                    if title and len(title) > 5 and "torna" not in title.lower() and "oggetto" not in title.lower() and "ricerca" not in title.lower():
+                # Ignoriamo link di navigazione generali, filtri e paginazione
+                if "ricerca" in href or "ARCHIVIATI" in href or href.endswith(f"/{category_id}/show"):
+                    continue
+                
+                if title and len(title) > 4 and "torna" not in title.lower() and "oggetto" not in title.lower():
+                    # Estraiamo l'ID numerico dell'atto dall'URL (es. 2466)
+                    match = re.search(r'/bacheca-digitale/(\d+)/', href)
+                    if match:
+                        doc_id = match.group(1)
+                        # Costruiamo il link diretto al singolo documento
+                        direct_link = f"https://nuvola.madisoft.it/bacheca-digitale/{doc_id}/documento/MIIC8GH008"
+                        items.append({"id": doc_id, "title": title, "link": direct_link})
+                    elif "/bacheca-digitale/" in href:
                         item_id = href.split("?")[0]
                         full_link = href if href.startswith("http") else f"https://nuvola.madisoft.it{href}"
                         items.append({"id": item_id, "title": title, "link": full_link})
     except Exception as e:
-        print(f"Errore lettura Albo online: {e}")
+        print(f"Errore lettura PN: {e}")
             
     unique_items = {}
     for item in items:
@@ -91,26 +85,22 @@ def fetch_albo():
 
 def main():
     state = load_state()
-    sources = {
-        "novita": {"name": "📰 Novità", "fetch": fetch_novita},
-        "albo": {"name": "📌 Albo online", "fetch": fetch_albo}
-    }
+    key = "bacheca_8"
+    
+    if key not in state:
+        state[key] = []
+    
+    known_ids = set(state[key])
+    items = fetch_pn()
+    
+    new_items = [item for item in items if item["id"] not in known_ids]
+    
+    print(f"[📌 PN / Comunicazioni] Letti {len(items)}, Nuovi da inviare {len(new_items)}")
 
-    for key, src in sources.items():
-        if key not in state:
-            state[key] = []
-        
-        known_ids = set(state[key])
-        items = src["fetch"]()
-        
-        new_items = [item for item in items if item["id"] not in known_ids]
-        
-        print(f"[{src['name']}] Letti {len(items)}, Nuovi da inviare {len(new_items)}")
-
-        for item in reversed(new_items):
-            msg = f"<b>{src['name']} IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
-            send_telegram_message(msg)
-            state[key].append(item["id"])
+    for item in reversed(new_items):
+        msg = f"<b>📌 PN / Comunicazioni IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
+        send_telegram_message(msg)
+        state[key].append(item["id"])
 
     save_state(state)
 
