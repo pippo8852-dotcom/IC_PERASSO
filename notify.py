@@ -43,25 +43,9 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"❌ Errore invio Telegram: {e}")
 
-def fetch_novita():
+def fetch_albo():
     items = []
-    url = "https://icperasso.edu.it/feed/"
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.content, "xml")
-            for item in soup.find_all("item"):
-                title = item.title.text.strip() if item.title else "Senza titolo"
-                link = item.link.text.strip() if item.link else ""
-                guid = item.guid.text.strip() if item.guid else link
-                items.append({"id": guid, "title": title, "link": link})
-    except Exception as e:
-        print(f"Errore lettura Novità: {e}")
-    return items
-
-def fetch_nuvola_bacheca(category_id, name_prefix):
-    items = []
+    category_id = "1"
     url = f"https://nuvola.madisoft.it/bacheca-digitale/bacheca/ricerca/MIIC8GH008/{category_id}/show"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     
@@ -71,20 +55,18 @@ def fetch_nuvola_bacheca(category_id, name_prefix):
             soup = BeautifulSoup(resp.text, "html.parser")
             for a in soup.find_all('a', href=True):
                 href = a['href']
-                
-                # FILTRO RIGOROSO: vogliamo SOLO i link dei singoli atti, escludendo /ricerca/ e /show finali generici
+                # Filtriamo rigorosamente solo i link ai singoli atti dell'albo
                 if f"/bacheca-digitale/bacheca/MIIC8GH008/{category_id}/" in href:
                     if "ricerca" in href or href.endswith(f"/{category_id}/show") or href.endswith(f"/{category_id}/show/"):
                         continue
                         
                     title = a.get_text(strip=True)
-                    # Verifichiamo che il titolo sia valido e non un'etichetta di navigazione
                     if title and len(title) > 5 and "torna" not in title.lower() and "oggetto" not in title.lower() and "ricerca" not in title.lower():
                         item_id = href.split("?")[0]
                         full_link = href if href.startswith("http") else f"https://nuvola.madisoft.it{href}"
                         items.append({"id": item_id, "title": title, "link": full_link})
     except Exception as e:
-        print(f"Errore lettura {name_prefix}: {e}")
+        print(f"Errore lettura Albo online: {e}")
             
     unique_items = {}
     for item in items:
@@ -94,27 +76,25 @@ def fetch_nuvola_bacheca(category_id, name_prefix):
 
 def main():
     state = load_state()
-    sources = {
-        "novita": {"name": "📰 Novità", "fetch": fetch_novita},
-        "albo": {"name": "📌 Albo online", "fetch": lambda: fetch_nuvola_bacheca("1", "Albo online")},
-        "bacheca_8": {"name": "📌 Comunicazioni (Cat. 8)", "fetch": lambda: fetch_nuvola_bacheca("8", "Bacheca 8")}
-    }
+    key = "albo"
+    
+    if key not in state:
+        state[key] = []
+    
+    known_ids = set(state[key])
+    items = fetch_albo()
+    
+    new_items = [item for item in items if item["id"] not in known_ids]
+    
+    print(f"[📌 Albo online] Letti {len(items)}, Nuovi effettivi {len(new_items)}")
 
-    for key, src in sources.items():
-        if key not in state:
-            state[key] = []
-        
-        known_ids = set(state[key])
-        items = src["fetch"]()
-        
-        new_items = [item for item in items if item["id"] not in known_ids]
-        
-        print(f"[{src['name']}] Letti {len(items)}, Nuovi effettivi {len(new_items)}")
+    is_first_run = len(known_ids) == 0 and len(state[key]) == 0
 
-        for item in reversed(new_items):
-            msg = f"<b>{src['name']} IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
+    for item in reversed(new_items):
+        if not is_first_run:
+            msg = f"<b>📌 Albo online IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
             send_telegram_message(msg)
-            state[key].append(item["id"])
+        state[key].append(item["id"])
 
     save_state(state)
 
