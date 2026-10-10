@@ -332,6 +332,61 @@ ATOM_SAMPLE = """<?xml version="1.0" encoding="utf-8"?>
 </feed>"""
 
 
+WP_SAMPLE = [
+    {"id": 4455, "link": "https://icperasso.edu.it/open-day/",
+     "title": {"rendered": "Open day &#8211; iscrizioni &amp; <em>info</em>"},
+     "date_gmt": "2026-10-10T10:30:00"},
+]
+
+
+def make_wp_response(payload):
+    resp = make_response(200, "")
+    resp.json.return_value = payload
+    return resp
+
+
+class WpApiTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch("notify.time.sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def parse(self, payload):
+        with mock.patch("notify.requests.get", return_value=make_wp_response(payload)):
+            return notify._fetch_with_retries(notify.WP_API_URL, notify._parse_wp_posts)
+
+    def test_post_is_read_with_feed_compatible_id(self):
+        item = self.parse(WP_SAMPLE)[0]
+        self.assertEqual(item["id"], "https://icperasso.edu.it/?p=4455")
+        self.assertEqual(item["link"], "https://icperasso.edu.it/open-day/")
+
+    def test_title_is_unescaped_and_stripped_of_tags(self):
+        self.assertEqual(self.parse(WP_SAMPLE)[0]["title"], "Open day \u2013 iscrizioni & info")
+
+    def test_date_gmt_is_converted_to_italian_time(self):
+        self.assertEqual(self.parse(WP_SAMPLE)[0]["date"], "10/10/2026 12:30")
+
+    def test_missing_date_gives_none(self):
+        post = [{"id": 1, "link": "https://x.it/a", "title": {"rendered": "A"}}]
+        self.assertIsNone(self.parse(post)[0]["date"])
+
+    def test_missing_title_gets_default(self):
+        post = [{"id": 1, "link": "https://x.it/a"}]
+        self.assertEqual(self.parse(post)[0]["title"], "Nuova notizia")
+
+    def test_post_without_id_or_link_is_skipped(self):
+        posts = [{"link": "https://x.it/a"}, {"id": 2}, {"id": 3, "link": "https://x.it/c"}]
+        self.assertEqual([i["id"] for i in self.parse(posts)], ["https://icperasso.edu.it/?p=3"])
+
+    def test_empty_list_is_a_valid_empty_result(self):
+        self.assertEqual(self.parse([]), [])
+
+    def test_wp_date_helper(self):
+        self.assertEqual(notify.parse_wp_gmt_date("2026-01-12T10:30:00"), "12/01/2026 11:30")
+        self.assertIsNone(notify.parse_wp_gmt_date("boh"))
+        self.assertIsNone(notify.parse_wp_gmt_date(None))
+
+
 class FetchNovitaTests(unittest.TestCase):
     def setUp(self):
         patcher = mock.patch("notify.time.sleep")
@@ -431,31 +486,59 @@ class FetchNovitaTests(unittest.TestCase):
         self.assertEqual(get.call_args_list[0].args[0], get.call_args_list[1].args[0])
         self.sleep.assert_called_once()
 
-    def test_falls_back_to_alternative_url_when_first_keeps_failing(self):
-        responses = [self.bad_gateway()] * notify.FEED_ATTEMPTS + [make_response(200, RSS_SAMPLE)]
+    def test_falls_back_to_wordpress_api_when_feed_keeps_failing(self):
+        responses = [self.bad_gateway()] * notify.FEED_ATTEMPTS + [make_wp_response(WP_SAMPLE)]
+        with mock.patch("notify.requests.get", side_effect=responses) as get:
+            items = notify.fetch_novita()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(get.call_args_list[-1].args[0], notify.WP_API_URL)
+
+    def test_falls_back_to_alternative_feed_when_feed_and_api_fail(self):
+        responses = [self.bad_gateway()] * (2 * notify.FEED_ATTEMPTS) + [make_response(200, RSS_SAMPLE)]
         with mock.patch("notify.requests.get", side_effect=responses) as get:
             items = notify.fetch_novita()
         self.assertEqual(len(items), 2)
         self.assertEqual(get.call_args_list[-1].args[0], notify.FEED_URLS[1])
 
-    def test_malformed_first_url_falls_back_to_next(self):
+    def test_malformed_feed_falls_back_to_next_source(self):
         responses = [make_response(200, "<html>non xml"), make_response(200, "<html>ancora no"),
-                     make_response(200, ATOM_SAMPLE)]
+                     make_wp_response(WP_SAMPLE)]
         with mock.patch("notify.requests.get", side_effect=responses):
             items = notify.fetch_novita()
+        self.assertEqual(items[0]["id"], "https://icperasso.edu.it/?p=4455")
+
+    def test_atom_feed_is_used_as_last_resort(self):
+        responses = [self.bad_gateway()] * (3 * notify.FEED_ATTEMPTS) + [make_response(200, ATOM_SAMPLE)]
+        with mock.patch("notify.requests.get", side_effect=responses) as get:
+            items = notify.fetch_novita()
         self.assertEqual(items[0]["title"], "Gita a Milano")
+        self.assertEqual(get.call_args_list[-1].args[0], notify.FEED_URLS[2])
 
     def test_all_urls_failing_returns_empty_list_after_all_attempts(self):
         with mock.patch("notify.requests.get",
                         return_value=self.bad_gateway()) as get:
             self.assertEqual(notify.fetch_novita(), [])
-        self.assertEqual(get.call_count, len(notify.FEED_URLS) * notify.FEED_ATTEMPTS)
+        self.assertEqual(get.call_count, (len(notify.FEED_URLS) + 1) * notify.FEED_ATTEMPTS)
+
+    def test_api_error_payload_is_treated_as_failure(self):
+        api_error = make_wp_response({"code": "rest_disabled", "message": "REST API disabilitata"})
+        responses = [self.bad_gateway()] * notify.FEED_ATTEMPTS + \
+                    [api_error] * notify.FEED_ATTEMPTS + [make_response(200, RSS_SAMPLE)]
+        with mock.patch("notify.requests.get", side_effect=responses):
+            items = notify.fetch_novita()
+        self.assertEqual(len(items), 2)
+
+    def test_request_timeout_is_extended(self):
+        with mock.patch("notify.requests.get",
+                        return_value=make_response(200, RSS_SAMPLE)) as get:
+            notify.fetch_novita()
+        self.assertEqual(get.call_args.kwargs["timeout"], notify.FEED_TIMEOUT)
 
     def test_no_sleep_after_last_attempt_of_a_url(self):
         with mock.patch("notify.requests.get", return_value=self.bad_gateway()):
             notify.fetch_novita()
         self.assertEqual(self.sleep.call_count,
-                         len(notify.FEED_URLS) * (notify.FEED_ATTEMPTS - 1))
+                         (len(notify.FEED_URLS) + 1) * (notify.FEED_ATTEMPTS - 1))
 
 
 class DateHelpersTests(unittest.TestCase):
@@ -548,20 +631,42 @@ class PnDateTests(unittest.TestCase):
         with mock.patch("notify.requests.get", return_value=make_response(200, html_text)):
             return notify.fetch_pn()
 
-    def test_date_and_time_taken_from_row_text(self):
-        html_text = table_html(
-            "<td>Circolare 5</td><td>Pubblicata il 05/10/2026 alle 09:30</td>"
-            "<td><a href='/bacheca-digitale/111/x'>Apri</a></td>")
+    LINK = "<td><a href='/bacheca-digitale/111/x'>Apri</a></td>"
+
+    def test_date_and_time_taken_from_date_only_cell(self):
+        html_text = table_html("<td>Circolare 5</td><td>05/10/2026 09:30</td>" + self.LINK)
         self.assertEqual(self.fetch(html_text)[0]["date"], "05/10/2026 09:30")
 
-    def test_row_without_date_has_none(self):
+    def test_date_only_cell_with_hyphens(self):
+        html_text = table_html("<td>Circolare</td><td> 24-04-2026 </td>" + self.LINK)
+        self.assertEqual(self.fetch(html_text)[0]["date"], "24/04/2026")
+
+    def test_date_cited_inside_title_is_ignored(self):
         html_text = table_html(
-            "<td>Circolare</td><td><a href='/bacheca-digitale/111/x'>Apri</a></td>")
+            "<td>Avviso MIM 95165 del 24/04/2026 - Formazione docenti</td>" + self.LINK)
+        self.assertIsNone(self.fetch(html_text)[0]["date"])
+
+    def test_text_cell_with_label_and_date_is_ignored(self):
+        html_text = table_html("<td>Pubblicata il 05/10/2026</td>" + self.LINK)
+        self.assertIsNone(self.fetch(html_text)[0]["date"])
+
+    def test_impossible_date_cell_is_ignored(self):
+        html_text = table_html("<td>31/02/2026</td>" + self.LINK)
+        self.assertIsNone(self.fetch(html_text)[0]["date"])
+
+    def test_row_without_date_has_none(self):
+        html_text = table_html("<td>Circolare</td>" + self.LINK)
         self.assertIsNone(self.fetch(html_text)[0]["date"])
 
     def test_fallback_items_have_no_date(self):
         html_text = "<html><body><a href='/bacheca-digitale/41/x'>A</a></body></html>"
         self.assertIsNone(self.fetch(html_text)[0]["date"])
+
+    def test_whole_mode_of_text_helper(self):
+        self.assertEqual(notify.extract_date_from_text("05/10/2026 ore 9.05", whole=True),
+                         "05/10/2026 09:05")
+        self.assertIsNone(notify.extract_date_from_text("Avviso del 05/10/2026", whole=True))
+        self.assertEqual(notify.extract_date_from_text("Avviso del 05/10/2026"), "05/10/2026")
 
 
 class MainTests(unittest.TestCase):
