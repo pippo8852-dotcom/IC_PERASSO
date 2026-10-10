@@ -11,8 +11,8 @@ from pathlib import Path
 
 import requests
 
-TOKEN = os.environ["TELEGRAM_TOKEN"]
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]      # es. @nomecanale oppure -100123...
+TOKEN = os.environ["8255694064:AAEvMIstt4UKrvC_XibNI3DD4HycMPez5SA"]
+CHAT_ID = os.environ["-1002972103296"]      # es. @nomecanale oppure -100123...
 STATO = Path("stato.json")
 HEADERS = {"User-Agent": "Mozilla/5.0 (avvisi scuola)"}
 
