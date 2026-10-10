@@ -152,6 +152,8 @@ def fetch_pn():
             # Scansioniamo tutte le righe delle tabelle presenti nella bacheca
             rows = soup.find_all('tr')
             print(f"🔍 Righe tabella trovate nella pagina: {len(rows)}")
+            for sample in rows[:4]:
+                print(f"🧪 Riga di esempio: {sample.get_text(' ', strip=True)[:300]!r}")
             
             for row in rows:
                 links = row.find_all('a', href=True)
@@ -262,6 +264,9 @@ def fetch_novita(urls=None):
 
         date_node = _child(entry, "pubDate", f"{ATOM_NS}published", f"{ATOM_NS}updated")
         date = parse_feed_date(date_node.text) if date_node is not None else None
+        if not unique_items:
+            raw = date_node.text if date_node is not None else None
+            print(f"🧪 Prima voce del feed: data grezza {raw!r} -> {date!r}")
 
         if item_id not in unique_items:
             unique_items[item_id] = {"id": item_id, "title": title, "link": link, "date": date}
@@ -288,6 +293,7 @@ def process_source(state, source):
 
     new_items = [item for item in items if item["id"] not in known_ids]
     print(f"📊 Summary [{source['label']}]: Letti {len(items)} | Nuovi da inviare {len(new_items)}")
+    print(f"🗓 Date trovate: {sum(1 for i in items if i.get('date'))} su {len(items)}")
 
     for n, item in enumerate(reversed(new_items)):
         if n > 0:
