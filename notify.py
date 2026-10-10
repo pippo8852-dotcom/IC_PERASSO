@@ -58,22 +58,16 @@ def fetch_pn():
                 href = a['href']
                 title = a.get_text(strip=True)
                 
-                # Ignoriamo link di navigazione generali, filtri e paginazione
-                if "ricerca" in href or "ARCHIVIATI" in href or href.endswith(f"/{category_id}/show"):
-                    continue
-                
-                if title and len(title) > 4 and "torna" not in title.lower() and "oggetto" not in title.lower():
-                    # Estraiamo l'ID numerico dell'atto dall'URL (es. 2466)
-                    match = re.search(r'/bacheca-digitale/(\d+)/', href)
-                    if match:
-                        doc_id = match.group(1)
-                        # Costruiamo il link diretto al singolo documento
+                # Cerchiamo qualsiasi link che contenga un ID numerico di bacheca digitale
+                match = re.search(r'/bacheca-digitale/(\d+)', href)
+                if match:
+                    doc_id = match.group(1)
+                    
+                    # Filtriamo via i titoli di servizio, la paginazione o le etichette vuote
+                    if title and len(title) > 4 and "torna" not in title.lower() and "oggetto" not in title.lower() and "ricerca" not in title.lower():
+                        # Forziamo la costruzione del link esattamente come richiesto
                         direct_link = f"https://nuvola.madisoft.it/bacheca-digitale/{doc_id}/documento/MIIC8GH008"
                         items.append({"id": doc_id, "title": title, "link": direct_link})
-                    elif "/bacheca-digitale/" in href:
-                        item_id = href.split("?")[0]
-                        full_link = href if href.startswith("http") else f"https://nuvola.madisoft.it{href}"
-                        items.append({"id": item_id, "title": title, "link": full_link})
     except Exception as e:
         print(f"Errore lettura PN: {e}")
             
