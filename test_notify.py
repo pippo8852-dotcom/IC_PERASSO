@@ -13,6 +13,7 @@ def make_response(status=200, text=""):
     resp = mock.Mock()
     resp.status_code = status
     resp.text = text
+    resp.content = text.encode("utf-8") if isinstance(text, str) else text
     resp.raise_for_status = mock.Mock()
     return resp
 
@@ -239,6 +240,118 @@ class FetchPnTests(unittest.TestCase):
         self.assertEqual(self.fetch(""), [])
 
 
+
+RSS_SAMPLE = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>IC Perasso</title>
+    <item>
+      <title><![CDATA[Open day & iscrizioni]]></title>
+      <link>https://icperasso.edu.it/open-day/</link>
+      <guid isPermaLink="false">https://icperasso.edu.it/?p=200</guid>
+      <dc:creator>admin</dc:creator>
+    </item>
+    <item>
+      <title>  Sciopero   del 15 ottobre </title>
+      <link>https://icperasso.edu.it/sciopero/</link>
+      <guid isPermaLink="false">https://icperasso.edu.it/?p=199</guid>
+    </item>
+  </channel>
+</rss>"""
+
+ATOM_SAMPLE = """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>IC Perasso</title>
+  <entry>
+    <title>Gita a Milano</title>
+    <link rel="alternate" href="https://icperasso.edu.it/gita/"/>
+    <id>tag:icperasso.edu.it,2026:gita</id>
+  </entry>
+</feed>"""
+
+
+class FetchNovitaTests(unittest.TestCase):
+    def fetch(self, xml, status=200):
+        resp = make_response(status, xml)
+        if status >= 400:
+            resp.raise_for_status.side_effect = requests.HTTPError(str(status))
+        with mock.patch("notify.requests.get", return_value=resp):
+            return notify.fetch_novita()
+
+    def test_rss_happy_path(self):
+        items = self.fetch(RSS_SAMPLE)
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0]["id"], "https://icperasso.edu.it/?p=200")
+        self.assertEqual(items[0]["title"], "Open day & iscrizioni")
+        self.assertEqual(items[0]["link"], "https://icperasso.edu.it/open-day/")
+
+    def test_request_uses_feed_url(self):
+        with mock.patch("notify.requests.get",
+                        return_value=make_response(200, RSS_SAMPLE)) as get:
+            notify.fetch_novita()
+        self.assertEqual(get.call_args.args[0], "https://icperasso.edu.it/feed/")
+        self.assertEqual(get.call_args.kwargs["headers"]["User-Agent"], "Mozilla/5.0")
+        self.assertIn("timeout", get.call_args.kwargs)
+
+    def test_title_whitespace_is_normalized(self):
+        items = self.fetch(RSS_SAMPLE)
+        self.assertEqual(items[1]["title"], "Sciopero del 15 ottobre")
+
+    def test_atom_feed_is_supported(self):
+        items = self.fetch(ATOM_SAMPLE)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["id"], "tag:icperasso.edu.it,2026:gita")
+        self.assertEqual(items[0]["link"], "https://icperasso.edu.it/gita/")
+        self.assertEqual(items[0]["title"], "Gita a Milano")
+
+    def test_missing_guid_falls_back_to_link(self):
+        xml = ("<rss><channel><item><title>A</title>"
+               "<link>https://x.it/a</link></item></channel></rss>")
+        items = self.fetch(xml)
+        self.assertEqual(items[0]["id"], "https://x.it/a")
+
+    def test_missing_title_gets_default(self):
+        xml = ("<rss><channel><item><link>https://x.it/a</link>"
+               "</item></channel></rss>")
+        self.assertEqual(self.fetch(xml)[0]["title"], "Nuova notizia")
+
+    def test_item_without_link_is_skipped(self):
+        xml = ("<rss><channel><item><title>Senza link</title></item>"
+               "<item><title>Ok</title><link>https://x.it/ok</link></item>"
+               "</channel></rss>")
+        items = self.fetch(xml)
+        self.assertEqual([i["title"] for i in items], ["Ok"])
+
+    def test_long_title_is_truncated(self):
+        xml = ("<rss><channel><item><title>" + "A" * 500 + "</title>"
+               "<link>https://x.it/a</link></item></channel></rss>")
+        title = self.fetch(xml)[0]["title"]
+        self.assertEqual(len(title), 200)
+        self.assertTrue(title.endswith("..."))
+
+    def test_duplicate_guids_are_removed(self):
+        xml = ("<rss><channel>"
+               "<item><title>A</title><link>https://x.it/a</link><guid>1</guid></item>"
+               "<item><title>A bis</title><link>https://x.it/a2</link><guid>1</guid></item>"
+               "</channel></rss>")
+        self.assertEqual(len(self.fetch(xml)), 1)
+
+    def test_feed_without_items_returns_empty_list(self):
+        self.assertEqual(self.fetch("<rss><channel></channel></rss>"), [])
+
+    def test_malformed_xml_returns_empty_list(self):
+        self.assertEqual(self.fetch("<html><body>non è un feed"), [])
+
+    def test_http_error_returns_empty_list(self):
+        self.assertEqual(self.fetch("", status=403), [])
+
+    def test_network_error_returns_empty_list(self):
+        with mock.patch("notify.requests.get",
+                        side_effect=requests.Timeout("timeout")):
+            self.assertEqual(notify.fetch_novita(), [])
+
+
 class MainTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -256,8 +369,12 @@ class MainTests(unittest.TestCase):
             "link": f"https://example.com/{i}",
         }
 
-    def run_main(self, items):
+    def run_main(self, items, feed_items=None, feed_enabled=False):
+        sources = [dict(src, enabled=True) for src in notify.SOURCES] if feed_enabled \
+            else notify.SOURCES
         with mock.patch("notify.fetch_pn", return_value=items), \
+             mock.patch("notify.fetch_novita", return_value=feed_items or []), \
+             mock.patch.object(notify, "SOURCES", sources), \
              mock.patch("notify.send_telegram_message") as send:
             notify.main()
         return send
@@ -321,8 +438,75 @@ class MainTests(unittest.TestCase):
         send = self.run_main([self.item(1)])
         self.assertEqual(send.call_count, 1)
 
+    def test_all_sources_are_enabled_by_default(self):
+        self.assertTrue(all(s.get("enabled", True) for s in notify.SOURCES))
+        self.assertEqual({s["key"] for s in notify.SOURCES},
+                         {"bacheca_8", "feed_icperasso"})
+
+    def test_disabled_feed_is_not_fetched_nor_sent_nor_saved(self):
+        feed = [{"id": "g1", "title": "Notizia", "link": "https://x.it/n"}]
+        sources = [dict(src, enabled=(src["key"] != "feed_icperasso"))
+                   for src in notify.SOURCES]
+        with mock.patch("notify.fetch_pn", return_value=[self.item(1)]), \
+             mock.patch("notify.fetch_novita", return_value=feed) as fetch_feed, \
+             mock.patch.object(notify, "SOURCES", sources), \
+             mock.patch("notify.send_telegram_message") as send:
+            notify.main()
+        fetch_feed.assert_not_called()
+        self.assertEqual(send.call_count, 1)
+        self.assertIn("PN / Comunicazioni", send.call_args.args[0])
+        state = self.read_state()
+        self.assertEqual(state["bacheca_8"], ["1"])
+        self.assertNotIn("feed_icperasso", state)
+
+    def test_feed_items_are_sent_with_feed_label_and_saved_under_own_key(self):
+        feed = [{"id": "g1", "title": "Notizia", "link": "https://x.it/n"}]
+        send = self.run_main([], feed_items=feed, feed_enabled=True)
+        self.assertEqual(send.call_count, 1)
+        self.assertIn("News IC Perasso", send.call_args.args[0])
+        state = self.read_state()
+        self.assertEqual(state["feed_icperasso"], ["g1"])
+        self.assertEqual(state["bacheca_8"], [])
+
+    def test_both_sources_are_processed(self):
+        feed = [{"id": "g1", "title": "Notizia", "link": "https://x.it/n"}]
+        send = self.run_main([self.item(1)], feed_items=feed, feed_enabled=True)
+        self.assertEqual(send.call_count, 2)
+        state = self.read_state()
+        self.assertEqual(state["bacheca_8"], ["1"])
+        self.assertEqual(state["feed_icperasso"], ["g1"])
+
+    def test_known_feed_items_are_not_resent(self):
+        with open(self.path, "w") as f:
+            json.dump({"feed_icperasso": ["g1"]}, f)
+        feed = [{"id": "g1", "title": "Notizia", "link": "https://x.it/n"}]
+        send = self.run_main([], feed_items=feed, feed_enabled=True)
+        send.assert_not_called()
+
+    def test_failure_in_one_source_does_not_block_the_other(self):
+        feed = [{"id": "g1", "title": "Notizia", "link": "https://x.it/n"}]
+        enabled = [dict(src, enabled=True) for src in notify.SOURCES]
+        with mock.patch("notify.fetch_pn", return_value=[self.item(1)]), \
+             mock.patch("notify.fetch_novita", return_value=feed), \
+             mock.patch.object(notify, "SOURCES", enabled), \
+             mock.patch("notify.send_telegram_message",
+                        side_effect=[False, True]):
+            notify.main()
+        state = self.read_state()
+        self.assertEqual(state["bacheca_8"], [])
+        self.assertEqual(state["feed_icperasso"], ["g1"])
+
+    def test_special_characters_in_title_and_link_are_escaped(self):
+        feed = [{"id": "g1", "title": "Open day <2026> & iscrizioni",
+                 "link": "https://x.it/n?a=1&b=2"}]
+        send = self.run_main([], feed_items=feed, feed_enabled=True)
+        msg = send.call_args.args[0]
+        self.assertIn("Open day &lt;2026&gt; &amp; iscrizioni", msg)
+        self.assertIn("href='https://x.it/n?a=1&amp;b=2'", msg)
+
     def run_main_with_send_results(self, items, results):
         with mock.patch("notify.fetch_pn", return_value=items), \
+             mock.patch("notify.fetch_novita", return_value=[]), \
              mock.patch("notify.send_telegram_message",
                         side_effect=results) as send:
             notify.main()
