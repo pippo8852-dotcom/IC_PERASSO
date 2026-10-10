@@ -62,23 +62,30 @@ def fetch_novita():
 
 def fetch_nuvola_bacheca(category_id, name_prefix):
     items = []
-    url = f"https://nuvola.madisoft.it/bacheca-digitale/ricerca/MIIC8GH008/{category_id}/show"
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, "html.parser")
-            for a in soup.find_all('a', href=True):
-                href = a['href']
-                if "/bacheca-digitale/bacheca/" in href:
-                    item_id = href.split("?")[0]
-                    title = a.get_text(strip=True)
-                    if title and len(title) > 5:
-                        full_link = href if href.startswith("http") else f"https://nuvola.madisoft.it{href}"
-                        items.append({"id": item_id, "title": title, "link": full_link})
-    except Exception as e:
-        print(f"Errore lettura {name_prefix}: {e}")
+    # Proviamo sia l'endpoint bacheca che quello di ricerca
+    urls = [
+        f"https://nuvola.madisoft.it/bacheca-digitale/bacheca/MIIC8GH008/{category_id}/IN_PUBBLICAZIONE/0/show",
+        f"https://nuvola.madisoft.it/bacheca-digitale/ricerca/MIIC8GH008/{category_id}/show"
+    ]
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     
+    for url in urls:
+        try:
+            resp = requests.get(url, headers=headers, timeout=15)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for a in soup.find_all('a', href=True):
+                    href = a['href']
+                    # Cerca link specifici alle delibere/comunicazioni di Nuvola
+                    if "/bacheca-digitale/" in href and ("show" in href or "download" in href or category_id in href):
+                        title = a.get_text(strip=True)
+                        if title and len(title) > 4 and "torna" not in title.lower():
+                            item_id = href.split("?")[0]
+                            full_link = href if href.startswith("http") else f"https://nuvola.madisoft.it{href}"
+                            items.append({"id": item_id, "title": title, "link": full_link})
+        except Exception as e:
+            print(f"Errore lettura {name_prefix} da {url}: {e}")
+            
     unique_items = {}
     for item in items:
         if item["id"] not in unique_items:
@@ -100,13 +107,12 @@ def main():
         known_ids = set(state[key])
         items = src["fetch"]()
         
-        # Filtriamo le novità
         new_items = [item for item in items if item["id"] not in known_ids]
         
-        print(f"[{src['name']}] letti {len(items)}, invii previsti {len(new_items)}")
+        print(f"[{src['name']}] letti {len(items)}, nuovi da inviare {len(new_items)}")
 
-        # Inviamo al massimo 2 elementi per fonte per il test
-        for item in reversed(new_items[:2]):
+        # Inviamo i nuovi elementi
+        for item in reversed(new_items):
             msg = f"<b>{src['name']} IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
             send_telegram_message(msg)
             state[key].append(item["id"])
