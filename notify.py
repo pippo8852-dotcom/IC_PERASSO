@@ -3,7 +3,7 @@ import json
 import re
 import html
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from zoneinfo import ZoneInfo
 import xml.etree.ElementTree as ET
@@ -25,6 +25,10 @@ FEED_URLS = [
     "https://icperasso.edu.it/?feed=rss2",
     "https://icperasso.edu.it/feed/atom/",
 ]
+# Alternativa più leggera del feed: l'API di WordPress (stesso sito, stessi articoli).
+SITE_URL = "https://icperasso.edu.it"
+WP_API_URL = f"{SITE_URL}/wp-json/wp/v2/posts?per_page=10&_fields=id,link,title,date_gmt"
+FEED_TIMEOUT = 20        # secondi di attesa massima per ogni richiesta
 FEED_ATTEMPTS = 2        # tentativi per ogni indirizzo
 FEED_RETRY_WAIT = 5      # secondi di attesa tra due tentativi
 FEED_HEADERS = {
@@ -38,6 +42,11 @@ ATOM_NS = "{http://www.w3.org/2005/Atom}"
 LOCAL_TZ_NAME = "Europe/Rome"
 DATE_RE = re.compile(
     r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b(?:[^\d]{0,12}?(\d{1,2})[:.](\d{2})\b)?"
+)
+
+# Cella che contiene SOLO una data (e magari l'ora): gg/mm/aaaa, gg-mm-aaaa o gg.mm.aaaa
+DATE_ONLY_RE = re.compile(
+    r"(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})(?:\s*(?:ore|alle|-|,)?\s*(\d{1,2})[:.](\d{2}))?"
 )
 
 def format_local(dt):
@@ -63,9 +72,27 @@ def parse_feed_date(text):
     except ValueError:
         return None
 
-def extract_date_from_text(text):
-    """Cerca la prima data gg/mm/aaaa (con orario facoltativo) in un testo. None se non c'è."""
-    match = DATE_RE.search(text or "")
+def parse_wp_gmt_date(text):
+    """Data 'date_gmt' dell'API WordPress (ISO senza fuso, in UTC). None se assente o illeggibile."""
+    if not text or not str(text).strip():
+        return None
+    try:
+        dt = datetime.fromisoformat(str(text).strip())
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return format_local(dt)
+
+def extract_date_from_text(text, whole=False):
+    """Legge una data gg/mm/aaaa (con orario facoltativo).
+    whole=False: cerca la prima data ovunque nel testo.
+    whole=True: accetta il testo solo se è interamente una data (per riconoscere una colonna
+    "data" senza confonderla con date citate dentro un titolo). None se non trova nulla."""
+    if whole:
+        match = DATE_ONLY_RE.fullmatch((text or "").strip())
+    else:
+        match = DATE_RE.search(text or "")
     if not match:
         return None
     day, month, year, hour, minute = match.groups()
@@ -77,6 +104,14 @@ def extract_date_from_text(text):
     if hour is not None and int(hour) < 24 and int(minute) < 60:
         result += f" {int(hour):02d}:{minute}"
     return result
+
+def extract_row_date(row):
+    """Data di pubblicazione di una riga di tabella: la prima cella che contiene solo una data."""
+    for cell in row.find_all(["td", "th"]):
+        date = extract_date_from_text(cell.get_text(" ", strip=True), whole=True)
+        if date:
+            return date
+    return None
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -152,8 +187,9 @@ def fetch_pn():
             # Scansioniamo tutte le righe delle tabelle presenti nella bacheca
             rows = soup.find_all('tr')
             print(f"🔍 Righe tabella trovate nella pagina: {len(rows)}")
-            for sample in rows[:4]:
-                print(f"🧪 Riga di esempio: {sample.get_text(' ', strip=True)[:300]!r}")
+            for sample in rows[:3]:
+                cells = [c.get_text(" ", strip=True)[:60] for c in sample.find_all(["td", "th"])]
+                print(f"🧪 Celle riga di esempio ({len(cells)}): {cells!r}")
             
             for row in rows:
                 links = row.find_all('a', href=True)
@@ -175,8 +211,10 @@ def fetch_pn():
                             clean_title = clean_title[:197] + "..."
                             
                         direct_link = f"https://nuvola.madisoft.it/bacheca-digitale/{doc_id}/documento/MIIC8GH008"
+                        if len(items) < 2:
+                            print(f"🧪 HTML riga atto {doc_id}: {str(row)[:1500]!r}")
                         items.append({"id": doc_id, "title": clean_title, "link": direct_link,
-                                      "date": extract_date_from_text(title)})
+                                      "date": extract_row_date(row)})
                         break # Un solo ID valido per riga
 
             # Fallback nel caso la struttura non usi tag <tr>
@@ -220,30 +258,30 @@ def _entry_link(entry):
             return node.text.strip()
     return None
 
-def _download_feed(url):
-    """Scarica e interpreta il feed da un indirizzo, con qualche nuovo tentativo.
-    Restituisce l'elemento radice XML oppure None se non riesce."""
+def _fetch_with_retries(url, parse):
+    """Scarica un indirizzo e ne interpreta la risposta con parse(resp), con qualche nuovo
+    tentativo. Restituisce la lista di notizie oppure None se non riesce."""
     for attempt in range(1, FEED_ATTEMPTS + 1):
         try:
-            resp = requests.get(url, headers=FEED_HEADERS, timeout=15)
+            resp = requests.get(url, headers=FEED_HEADERS, timeout=FEED_TIMEOUT)
             print(f"📡 Status HTTP feed ({url}): {resp.status_code}")
             resp.raise_for_status()
-            return ET.fromstring(resp.content)
+            return parse(resp)
         except Exception as e:
             print(f"❌ Errore durante la lettura del feed (tentativo {attempt}/{FEED_ATTEMPTS}): {e}")
             if attempt < FEED_ATTEMPTS:
                 time.sleep(FEED_RETRY_WAIT)
     return None
 
-def fetch_novita(urls=None):
-    root = None
-    for url in (urls or FEED_URLS):
-        root = _download_feed(url)
-        if root is not None:
-            break
-    if root is None:
-        return []
+def _clean_title(text):
+    title = " ".join((text or "").split())
+    if not title:
+        return "Nuova notizia"
+    return title[:197] + "..." if len(title) > 200 else title
 
+def _parse_feed_xml(resp):
+    """Notizie di un feed RSS 2.0 o Atom."""
+    root = ET.fromstring(resp.content)
     entries = root.findall(".//item") or root.findall(f".//{ATOM_NS}entry")
     unique_items = {}
     for entry in entries:
@@ -256,11 +294,7 @@ def fetch_novita(urls=None):
         item_id = item_id or link
 
         title_node = _child(entry, "title", f"{ATOM_NS}title")
-        title = " ".join((title_node.text or "").split()) if title_node is not None else ""
-        if not title:
-            title = "Nuova notizia"
-        if len(title) > 200:
-            title = title[:197] + "..."
+        title = _clean_title(title_node.text if title_node is not None else "")
 
         date_node = _child(entry, "pubDate", f"{ATOM_NS}published", f"{ATOM_NS}updated")
         date = parse_feed_date(date_node.text) if date_node is not None else None
@@ -273,6 +307,36 @@ def fetch_novita(urls=None):
 
     print(f"📋 Notizie uniche nel feed: {len(unique_items)}")
     return list(unique_items.values())
+
+def _parse_wp_posts(resp):
+    """Notizie dall'API REST di WordPress. Gli ID hanno lo stesso formato dei guid del feed
+    (https://sito/?p=123), così non si creano duplicati passando da una fonte all'altra."""
+    posts = resp.json()
+    if not isinstance(posts, list):
+        raise ValueError(f"risposta API inattesa: {str(posts)[:100]}")
+    unique_items = {}
+    for post in posts:
+        post_id, link = post.get("id"), post.get("link")
+        if not post_id or not link:
+            continue
+        raw_title = (post.get("title") or {}).get("rendered", "")
+        title = _clean_title(html.unescape(re.sub(r"<[^>]+>", "", raw_title)))
+        item_id = f"{SITE_URL}/?p={post_id}"
+        if item_id not in unique_items:
+            unique_items[item_id] = {"id": item_id, "title": title, "link": link,
+                                     "date": parse_wp_gmt_date(post.get("date_gmt"))}
+    print(f"📋 Notizie uniche dall'API WordPress: {len(unique_items)}")
+    return list(unique_items.values())
+
+def fetch_novita():
+    """Prova in ordine: feed principale, API WordPress, poi gli altri indirizzi del feed."""
+    attempts = [(FEED_URLS[0], _parse_feed_xml), (WP_API_URL, _parse_wp_posts)]
+    attempts += [(url, _parse_feed_xml) for url in FEED_URLS[1:]]
+    for url, parse in attempts:
+        items = _fetch_with_retries(url, parse)
+        if items is not None:
+            return items
+    return []
 
 # Ogni fonte ha: chiave nello stato, etichetta del messaggio, funzione di lettura
 # e "enabled" (se False la fonte viene saltata del tutto: nessuna richiesta, nessun invio).
