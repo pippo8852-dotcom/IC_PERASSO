@@ -27,7 +27,7 @@ def save_state(state):
 
 def send_telegram_message(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("❌ Token o Chat ID di Telegram mancanti nei Secrets.")
+        print("❌ Token o Chat ID mancanti.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
@@ -39,9 +39,9 @@ def send_telegram_message(text):
     try:
         response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
-        print("✅ Messaggio Telegram inviato!")
+        print("✅ Messaggio inviato a Telegram!")
     except Exception as e:
-        print(f"❌ Errore nell'invio del messaggio Telegram: {e}")
+        print(f"❌ Errore invio Telegram: {e}")
 
 def fetch_novita():
     items = []
@@ -71,9 +71,9 @@ def fetch_nuvola_bacheca(category_id, name_prefix):
             soup = BeautifulSoup(resp.text, "html.parser")
             for a in soup.find_all('a', href=True):
                 href = a['href']
-                if "/bacheca-digitale/" in href and ("show" in href or "download" in href or category_id in href):
+                if "/bacheca-digitale/" in href and ("IN_PUBBLICAZIONE" in href or category_id in href):
                     title = a.get_text(strip=True)
-                    if title and len(title) > 4 and "torna" not in title.lower() and "ricerca" not in title.lower():
+                    if title and len(title) > 4 and "torna" not in title.lower() and "ricerca" not in title.lower() and "oggetto" not in title.lower():
                         item_id = href.split("?")[0]
                         full_link = href if href.startswith("http") else f"https://nuvola.madisoft.it{href}"
                         items.append({"id": item_id, "title": title, "link": full_link})
@@ -91,7 +91,7 @@ def main():
     sources = {
         "novita": {"name": "📰 Novità", "fetch": fetch_novita},
         "albo": {"name": "📌 Albo online", "fetch": lambda: fetch_nuvola_bacheca("1", "Albo online")},
-        "bacheca_8": {"name": "📌 Comunicazioni (Cat. 8)", "fetch": lambda: fetch_nuvola_bacheca("8", "Bacheca 8")}
+        "bacheca_8": {"name": "📌 PN / Comunicazioni", "fetch": lambda: fetch_nuvola_bacheca("8", "Bacheca 8")}
     }
 
     for key, src in sources.items():
@@ -103,13 +103,16 @@ def main():
         
         new_items = [item for item in items if item["id"] not in known_ids]
         
-        print(f"[{src['name']}] letti {len(items)}, nuovi da inviare {len(new_items)}")
+        print(f"[{src['name']}] Letti {len(items)}, Nuovi effettivi {len(new_items)}")
 
-        # Invierà subito tutto ciò che trova di nuovo/non ancora memorizzato
-        for item in reversed(new_items):
+        # Se vuoi forzare l'invio anche dei link appena scoperti senza filtri restrittivi:
+        target_items = new_items if new_items else items[:3] # Prende gli ultimi 3 se non ci sono "nuovi" puri
+
+        for item in reversed(target_items):
             msg = f"<b>{src['name']} IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
             send_telegram_message(msg)
-            state[key].append(item["id"])
+            if item["id"] not in known_ids:
+                state[key].append(item["id"])
 
     save_state(state)
 
