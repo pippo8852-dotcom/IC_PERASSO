@@ -27,7 +27,7 @@ def save_state(state):
 
 def send_telegram_message(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("❌ ERROR: Token o Chat ID di Telegram mancanti nei Secrets.")
+        print("❌ Token o Chat ID di Telegram mancanti nei Secrets.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
@@ -39,11 +39,8 @@ def send_telegram_message(text):
     try:
         response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
-        print("✅ Messaggio Telegram inviato con successo!")
     except Exception as e:
         print(f"❌ Errore nell'invio del messaggio Telegram: {e}")
-
-# --- Funzioni di scraping ---
 
 def fetch_novita():
     items = []
@@ -88,15 +85,11 @@ def fetch_nuvola_bacheca(category_id, name_prefix):
     return list(unique_items.values())
 
 def main():
-    # Invia subito un messaggio di test per verificare che le credenziali Telegram funzionino
-    send_telegram_message("🧪 <b>Test Bot IC Perasso</b>\n\nIl bot è attivo e connesso a Telegram!")
-
     state = load_state()
     sources = {
         "novita": {"name": "📰 Novità", "fetch": fetch_novita},
         "albo": {"name": "📌 Albo online", "fetch": lambda: fetch_nuvola_bacheca("1", "Albo online")},
-        "pn": {"name": "📌 PN Scuola e Competenze", "fetch": lambda: fetch_nuvola_bacheca("4", "PN Scuola")},
-        "circolari": {"name": "📢 Circolari", "fetch": lambda: fetch_nuvola_bacheca("5", "Circolari")}
+        "pn": {"name": "📌 PN Scuola e Competenze", "fetch": lambda: fetch_nuvola_bacheca("4", "PN Scuola")}
     }
 
     for key, src in sources.items():
@@ -106,14 +99,16 @@ def main():
         known_ids = set(state[key])
         items = src["fetch"]()
         
-        # Prendiamo solo gli ultimi 3 elementi non ancora inviati per evitare spam eccessivo
-        new_items = [item for item in items if item["id"] not in known_ids][:3]
+        new_items = [item for item in items if item["id"] not in known_ids]
         
-        print(f"[{src['name']}] letti {len(items)}, invii previsti {len(new_items)}")
+        print(f"[{src['name']}] letti {len(items)}, inviati {len(new_items)}")
+
+        is_first_run = len(known_ids) == 0 and len(state[key]) == 0
 
         for item in reversed(new_items):
-            msg = f"<b>{src['name']}</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
-            send_telegram_message(msg)
+            if not is_first_run:
+                msg = f"<b>{src['name']} IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
+                send_telegram_message(msg)
             state[key].append(item["id"])
 
     save_state(state)
