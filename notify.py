@@ -269,8 +269,8 @@ def process_source(state, source):
         # farebbe rifiutare il messaggio da Telegram.
         title = html.escape(item["title"], quote=False)
         link = html.escape(item["link"], quote=True)
-        date_line = f"\n🗓 {html.escape(item['date'])}" if item.get("date") else ""
-        msg = f"<b>{source['label']}</b>\n\n<a href='{link}'>{title}</a>{date_line}"
+        date_line = f"🗓 {html.escape(item['date'])}\n" if item.get("date") else ""
+        msg = f"<b>{source['label']}</b>\n{date_line}\n<a href='{link}'>{title}</a>"
         if send_telegram_message(msg):
             state[key].append(item["id"])
         else:
