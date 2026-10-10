@@ -39,6 +39,7 @@ def send_telegram_message(text):
     try:
         response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
+        print("✅ Messaggio Telegram inviato!")
     except Exception as e:
         print(f"❌ Errore nell'invio del messaggio Telegram: {e}")
 
@@ -69,7 +70,7 @@ def fetch_nuvola_bacheca(category_id, name_prefix):
             soup = BeautifulSoup(resp.text, "html.parser")
             for a in soup.find_all('a', href=True):
                 href = a['href']
-                if f"/bacheca-digitale/bacheca/MIIC8GH008/{category_id}/" in href:
+                if "/bacheca-digitale/bacheca/" in href:
                     item_id = href.split("?")[0]
                     title = a.get_text(strip=True)
                     if title and len(title) > 5:
@@ -99,16 +100,15 @@ def main():
         known_ids = set(state[key])
         items = src["fetch"]()
         
+        # Filtriamo le novità
         new_items = [item for item in items if item["id"] not in known_ids]
         
-        print(f"[{src['name']}] letti {len(items)}, inviati {len(new_items)}")
+        print(f"[{src['name']}] letti {len(items)}, invii previsti {len(new_items)}")
 
-        is_first_run = len(known_ids) == 0 and len(state[key]) == 0
-
-        for item in reversed(new_items):
-            if not is_first_run:
-                msg = f"<b>{src['name']} IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
-                send_telegram_message(msg)
+        # Inviamo al massimo 2 elementi per fonte per il test
+        for item in reversed(new_items[:2]):
+            msg = f"<b>{src['name']} IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
+            send_telegram_message(msg)
             state[key].append(item["id"])
 
     save_state(state)
