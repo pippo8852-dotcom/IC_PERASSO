@@ -2,6 +2,7 @@ import os
 import json
 import re
 import html
+import time
 import xml.etree.ElementTree as ET
 import requests
 from bs4 import BeautifulSoup
@@ -12,6 +13,20 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 STATE_FILE = "sent_items.json"
 FEED_URL = "https://icperasso.edu.it/feed/"
+# Indirizzi alternativi dello stesso feed WordPress, provati in ordine se il primo non risponde.
+FEED_URLS = [
+    FEED_URL,
+    "https://icperasso.edu.it/?feed=rss2",
+    "https://icperasso.edu.it/feed/atom/",
+]
+FEED_ATTEMPTS = 2        # tentativi per ogni indirizzo
+FEED_RETRY_WAIT = 5      # secondi di attesa tra due tentativi
+FEED_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+    "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8",
+    "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
+}
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
 
 def load_state():
@@ -131,15 +146,28 @@ def _entry_link(entry):
             return node.text.strip()
     return None
 
-def fetch_novita(url=FEED_URL):
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    try:
-        resp = requests.get(url, headers=headers, timeout=15)
-        print(f"📡 Status HTTP feed: {resp.status_code}")
-        resp.raise_for_status()
-        root = ET.fromstring(resp.content)
-    except Exception as e:
-        print(f"❌ Errore durante la lettura del feed: {e}")
+def _download_feed(url):
+    """Scarica e interpreta il feed da un indirizzo, con qualche nuovo tentativo.
+    Restituisce l'elemento radice XML oppure None se non riesce."""
+    for attempt in range(1, FEED_ATTEMPTS + 1):
+        try:
+            resp = requests.get(url, headers=FEED_HEADERS, timeout=15)
+            print(f"📡 Status HTTP feed ({url}): {resp.status_code}")
+            resp.raise_for_status()
+            return ET.fromstring(resp.content)
+        except Exception as e:
+            print(f"❌ Errore durante la lettura del feed (tentativo {attempt}/{FEED_ATTEMPTS}): {e}")
+            if attempt < FEED_ATTEMPTS:
+                time.sleep(FEED_RETRY_WAIT)
+    return None
+
+def fetch_novita(urls=None):
+    root = None
+    for url in (urls or FEED_URLS):
+        root = _download_feed(url)
+        if root is not None:
+            break
+    if root is None:
         return []
 
     entries = root.findall(".//item") or root.findall(f".//{ATOM_NS}entry")
