@@ -19,7 +19,7 @@ jobs:
       - run: pip install requests
       - run: python notify.py
         env:
-          TELEGRAM_TOKEN: ${{8255694064:AAEvMIstt4UKrvC_XibNI3DD4HycMPez5SA}}
+          TELEGRAM_TOKEN: ${{secrets.TELEGRAM_TOKEN}}
           TELEGRAM_CHAT_ID: ${{ -1002972103296 }}
       - name: Salva stato
         run: |
