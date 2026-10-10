@@ -51,19 +51,16 @@ def fetch_pn():
     
     try:
         resp = requests.get(url, headers=headers, timeout=15)
+        print(f"Status code pagina PN: {resp.status_code}")
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "html.parser")
             for a in soup.find_all('a', href=True):
                 href = a['href']
                 
-                # Cerchiamo specificamente i link che contengono /documento/ o /IN_PUBBLICAZIONE/
-                if "/bacheca-digitale/" in href and ("/documento/" in href or "/IN_PUBBLICAZIONE/" in href):
-                    # Escludiamo eventuali link di ricerca o di navigazione generale
-                    if "ricerca" in href or href.endswith("/show") or href.endswith("/show/"):
-                        continue
-                        
+                # Cattura i link sotto /bacheca-digitale/ escludendo le schermate di ricerca e di show generali
+                if "/bacheca-digitale/" in href and not href.endswith("/show") and not href.endswith("/show/") and "ricerca" not in href:
                     title = a.get_text(strip=True)
-                    if title and len(title) > 5 and "torna" not in title.lower() and "oggetto" not in title.lower() and "ricerca" not in title.lower():
+                    if title and len(title) > 4 and "torna" not in title.lower() and "oggetto" not in title.lower() and "ricerca" not in title.lower():
                         item_id = href.split("?")[0]
                         full_link = href if href.startswith("http") else f"https://nuvola.madisoft.it{href}"
                         items.append({"id": item_id, "title": title, "link": full_link})
