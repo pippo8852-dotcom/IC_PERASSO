@@ -174,6 +174,16 @@ def send_telegram_message(text):
             return False
     return False
 
+PN_MAX_TEXT = 500  # lunghezza massima di dicitura e oggetto di un PN (Telegram accetta 4096 caratteri)
+
+def _shorten(text, limit):
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+def _cell_text(row, class_fragment):
+    """Testo (con spazi normalizzati) della prima cella la cui classe contiene class_fragment."""
+    cell = row.find("td", class_=lambda c: c and class_fragment in c)
+    return " ".join(cell.get_text(" ", strip=True).split()) if cell is not None else ""
+
 def fetch_pn():
     items = []
     category_id = "8"
@@ -209,10 +219,20 @@ def fetch_pn():
                         # Tronchiamo l'eventuale prefisso generico se troppo lungo
                         if len(clean_title) > 200:
                             clean_title = clean_title[:197] + "..."
-                            
+
+                        # Se la riga ha le colonne di Nuvola, usiamo la dicitura completa dell'atto
+                        # (colonna permalink) e, a parte, il suo oggetto (colonna documento_oggetto).
+                        dicitura = _cell_text(row, "grid-column-permalink")
+                        oggetto = _cell_text(row, "documento_oggetto")
+                        subject = None
+                        if dicitura:
+                            clean_title = _shorten(dicitura, PN_MAX_TEXT)
+                            if oggetto and oggetto != dicitura:
+                                subject = _shorten(oggetto, PN_MAX_TEXT)
+
                         direct_link = f"https://nuvola.madisoft.it/bacheca-digitale/{doc_id}/documento/MIIC8GH008"
                         items.append({"id": doc_id, "title": clean_title, "link": direct_link,
-                                      "date": extract_row_date(row)})
+                                      "date": extract_row_date(row), "subject": subject})
                         break # Un solo ID valido per riga
 
             # Fallback nel caso la struttura non usi tag <tr>
@@ -338,9 +358,11 @@ def fetch_novita():
 # La funzione è chiamata tramite lambda per essere risolta a ogni esecuzione.
 SOURCES = [
     {"key": "bacheca_8", "label": "📌 PN / Comunicazioni IC Perasso",
+     "link_label": "🔗 Apri il documento",
      "fetch": lambda: fetch_pn(), "enabled": True},
     # Novità del sito: per disattivarle basta mettere "enabled": False
     {"key": "feed_icperasso", "label": "📰 News IC Perasso",
+     "link_label": "🔗 Leggi la notizia",
      "fetch": lambda: fetch_novita(), "enabled": True},
 ]
 
@@ -362,7 +384,11 @@ def process_source(state, source):
         title = html.escape(item["title"], quote=False)
         link = html.escape(item["link"], quote=True)
         date_line = f"🗓 {html.escape(item['date'])}\n" if item.get("date") else ""
-        msg = f"<b>{source['label']}</b>\n{date_line}\n<a href='{link}'>{title}</a>"
+        body = title
+        if item.get("subject"):
+            body += "\n" + html.escape(item["subject"], quote=False)
+        link_label = html.escape(source.get("link_label", "🔗 Apri"), quote=False)
+        msg = f"<b>{source['label']}</b>\n{date_line}\n{body}\n\n<a href='{link}'>{link_label}</a>"
         if send_telegram_message(msg):
             state[key].append(item["id"])
         else:
