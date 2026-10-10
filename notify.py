@@ -71,9 +71,13 @@ def fetch_nuvola_bacheca(category_id, name_prefix):
             soup = BeautifulSoup(resp.text, "html.parser")
             for a in soup.find_all('a', href=True):
                 href = a['href']
-                if "/bacheca-digitale/" in href and ("IN_PUBBLICAZIONE" in href or category_id in href):
+                # Filtriamo rigorosamente solo i link agli atti specifici (escludendo ricerca e archivi)
+                if "/bacheca-digitale/bacheca/MIIC8GH008/" in href and ("/show" in href or "/download" in href):
+                    if "ricerca" in href or "ARCHIVIATI" in href:
+                        continue
+                        
                     title = a.get_text(strip=True)
-                    if title and len(title) > 4 and "torna" not in title.lower() and "ricerca" not in title.lower() and "oggetto" not in title.lower():
+                    if title and len(title) > 4 and "torna" not in title.lower() and "oggetto" not in title.lower():
                         item_id = href.split("?")[0]
                         full_link = href if href.startswith("http") else f"https://nuvola.madisoft.it{href}"
                         items.append({"id": item_id, "title": title, "link": full_link})
@@ -105,14 +109,11 @@ def main():
         
         print(f"[{src['name']}] Letti {len(items)}, Nuovi effettivi {len(new_items)}")
 
-        # Se vuoi forzare l'invio anche dei link appena scoperti senza filtri restrittivi:
-        target_items = new_items if new_items else items[:3] # Prende gli ultimi 3 se non ci sono "nuovi" puri
-
-        for item in reversed(target_items):
+        # Pubblica i nuovi elementi trovati
+        for item in reversed(new_items):
             msg = f"<b>{src['name']} IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
             send_telegram_message(msg)
-            if item["id"] not in known_ids:
-                state[key].append(item["id"])
+            state[key].append(item["id"])
 
     save_state(state)
 
