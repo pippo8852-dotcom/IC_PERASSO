@@ -62,29 +62,23 @@ def fetch_novita():
 
 def fetch_nuvola_bacheca(category_id, name_prefix):
     items = []
-    # Proviamo sia l'endpoint bacheca che quello di ricerca
-    urls = [
-        f"https://nuvola.madisoft.it/bacheca-digitale/bacheca/MIIC8GH008/{category_id}/IN_PUBBLICAZIONE/0/show",
-        f"https://nuvola.madisoft.it/bacheca-digitale/ricerca/MIIC8GH008/{category_id}/show"
-    ]
+    url = f"https://nuvola.madisoft.it/bacheca-digitale/bacheca/ricerca/MIIC8GH008/{category_id}/show"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     
-    for url in urls:
-        try:
-            resp = requests.get(url, headers=headers, timeout=15)
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, "html.parser")
-                for a in soup.find_all('a', href=True):
-                    href = a['href']
-                    # Cerca link specifici alle delibere/comunicazioni di Nuvola
-                    if "/bacheca-digitale/" in href and ("show" in href or "download" in href or category_id in href):
-                        title = a.get_text(strip=True)
-                        if title and len(title) > 4 and "torna" not in title.lower():
-                            item_id = href.split("?")[0]
-                            full_link = href if href.startswith("http") else f"https://nuvola.madisoft.it{href}"
-                            items.append({"id": item_id, "title": title, "link": full_link})
-        except Exception as e:
-            print(f"Errore lettura {name_prefix} da {url}: {e}")
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for a in soup.find_all('a', href=True):
+                href = a['href']
+                if "/bacheca-digitale/" in href and ("show" in href or "download" in href or category_id in href):
+                    title = a.get_text(strip=True)
+                    if title and len(title) > 4 and "torna" not in title.lower() and "ricerca" not in title.lower():
+                        item_id = href.split("?")[0]
+                        full_link = href if href.startswith("http") else f"https://nuvola.madisoft.it{href}"
+                        items.append({"id": item_id, "title": title, "link": full_link})
+    except Exception as e:
+        print(f"Errore lettura {name_prefix}: {e}")
             
     unique_items = {}
     for item in items:
@@ -97,7 +91,7 @@ def main():
     sources = {
         "novita": {"name": "📰 Novità", "fetch": fetch_novita},
         "albo": {"name": "📌 Albo online", "fetch": lambda: fetch_nuvola_bacheca("1", "Albo online")},
-        "pn": {"name": "📌 PN Scuola e Competenze", "fetch": lambda: fetch_nuvola_bacheca("4", "PN Scuola")}
+        "bacheca_8": {"name": "📌 Comunicazioni (Cat. 8)", "fetch": lambda: fetch_nuvola_bacheca("8", "Bacheca 8")}
     }
 
     for key, src in sources.items():
@@ -111,10 +105,12 @@ def main():
         
         print(f"[{src['name']}] letti {len(items)}, nuovi da inviare {len(new_items)}")
 
-        # Inviamo i nuovi elementi
+        is_first_run = len(known_ids) == 0 and len(state[key]) == 0
+
         for item in reversed(new_items):
-            msg = f"<b>{src['name']} IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
-            send_telegram_message(msg)
+            if not is_first_run:
+                msg = f"<b>{src['name']} IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
+                send_telegram_message(msg)
             state[key].append(item["id"])
 
     save_state(state)
