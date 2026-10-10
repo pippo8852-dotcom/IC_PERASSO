@@ -11,7 +11,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 STATE_FILE = "sent_items.json"
-FEED_URL = "https://icperasso.edu.it/feed"
+FEED_URL = "https://icperasso.edu.it/feed/"
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
 
 def load_state():
@@ -131,8 +131,8 @@ def _entry_link(entry):
             return node.text.strip()
     return None
 
-def fetch_feed(url=FEED_URL):
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+def fetch_novita(url=FEED_URL):
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         resp = requests.get(url, headers=headers, timeout=15)
         print(f"📡 Status HTTP feed: {resp.status_code}")
@@ -166,11 +166,15 @@ def fetch_feed(url=FEED_URL):
     print(f"📋 Notizie uniche nel feed: {len(unique_items)}")
     return list(unique_items.values())
 
-# Ogni fonte ha: chiave nello stato, etichetta del messaggio e funzione di lettura.
+# Ogni fonte ha: chiave nello stato, etichetta del messaggio, funzione di lettura
+# e "enabled" (se False la fonte viene saltata del tutto: nessuna richiesta, nessun invio).
 # La funzione è chiamata tramite lambda per essere risolta a ogni esecuzione.
 SOURCES = [
-    {"key": "bacheca_8", "label": "📌 PN / Comunicazioni IC Perasso", "fetch": lambda: fetch_pn()},
-    {"key": "feed_icperasso", "label": "📰 News IC Perasso", "fetch": lambda: fetch_feed()},
+    {"key": "bacheca_8", "label": "📌 PN / Comunicazioni IC Perasso",
+     "fetch": lambda: fetch_pn(), "enabled": True},
+    # Novità del sito: per disattivarle basta mettere "enabled": False
+    {"key": "feed_icperasso", "label": "📰 News IC Perasso",
+     "fetch": lambda: fetch_novita(), "enabled": True},
 ]
 
 def process_source(state, source):
@@ -199,6 +203,8 @@ def process_source(state, source):
 def main():
     state = load_state()
     for source in SOURCES:
+        if not source.get("enabled", True):
+            continue
         process_source(state, source)
     save_state(state)
 
