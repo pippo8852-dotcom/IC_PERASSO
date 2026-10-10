@@ -1,107 +1,130 @@
-"""Avvisi Telegram per IC Perasso: novità del sito, Albo online, PN Scuola e Competenze.
-   (Le comunicazioni UST Milano sono gestite separatamente su Make.com, perché il sito
-   del Ministero blocca le richieste provenienti dai server di GitHub Actions.)"""
-import html
-import json
 import os
-import re
-import time
-import xml.etree.ElementTree as ET
-from pathlib import Path
-
+import json
 import requests
+from bs4 import BeautifulSoup
+from datetime import datetime
 
-TOKEN = os.environ["8255694064:AAEvMIstt4UKrvC_XibNI3DD4HycMPez5SA"]
-CHAT_ID = os.environ["-1002972103296"]      # es. @nomecanale oppure -100123...
-STATO = Path("stato.json")
-HEADERS = {"User-Agent": "Mozilla/5.0 (avvisi scuola)"}
+# Configurazione Telegram (legge le variabili impostate nei Secrets del repository)
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-NUVOLA = "https://nuvola.madisoft.it/bacheca-digitale/bacheca"
-# (nome, tipo, indirizzo)
-FONTI = [
-    ("📰 Novità", "feed", "https://icperasso.edu.it/feed/"),
-    ("📌 Albo online", "nuvola", f"{NUVOLA}/MIIC8GH008/1/IN_PUBBLICAZIONE/0/show"),
-    ("📌 PN Scuola e Competenze", "nuvola", f"{NUVOLA}/ricerca/MIIC8GH008/8/show"),
-    ("📋 Circolari", "nuvola", f"{NUVOLA}/ricerca/MIIC8GH008/5/show"),
-]
+# File di stato per memorizzare gli ID degli articoli già inviati
+STATE_FILE = "sent_items.json"
 
-RIGA = re.compile(r"<tr[^>]*data-entity-id=.*?</tr>", re.S)
-CAMPI = re.compile(
-    r'data-entity-id="(?P<id>\d+)".*?'
-    r'href="(?P<link>https://nuvola\.madisoft\.it/bacheca-digitale/\d+/documento/[^"]+)".*?'
-    r"oggetto[^>]*>(?P<oggetto>[^<]+)</td>.*?"
-    r"numeroRegistro[^>]*>(?P<numero>[^<]+)</td>.*?"
-    r"dataPubblicazioneOnline[^>]*>(?P<data>[^<]+)</td>",
-    re.S,
-)
+def load_state():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
 
+def save_state(state):
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f, indent=2)
+    except Exception as e:
+        print(f"Errore nel salvataggio dello stato: {e}")
 
-def leggi_feed(url):
-    r = requests.get(url, headers=HEADERS, timeout=30)
-    r.raise_for_status()
-    voci = []
-    for item in ET.fromstring(r.content).iter("item"):
-        link = item.findtext("link")
-        titolo = html.unescape(item.findtext("title", ""))
-        voci.append((link, f"{titolo}\n{link}"))
-    return voci
+def send_telegram_message(text):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Token o Chat ID di Telegram mancanti nei Secrets.")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"Errore nell'invio del messaggio Telegram: {e}")
 
+# --- Funzioni di scraping ---
 
-def leggi_nuvola(url):
-    r = requests.get(url, headers=HEADERS, timeout=30)
-    r.raise_for_status()
-    voci = []
-    for riga in RIGA.findall(r.text):
-        m = CAMPI.search(riga)
-        if m:
-            d = {k: html.unescape(v.strip()) for k, v in m.groupdict().items()}
-            voci.append((
-                d["id"],
-                f"{d['oggetto']}\nN. {d['numero']} del {d['data']}\n{d['link']}",
-            ))
-    return voci
+def fetch_novita():
+    items = []
+    url = "https://icperasso.edu.it/feed/"
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.content, "xml")
+            for item in soup.find_all("item"):
+                title = item.title.text.strip() if item.title else "Senza titolo"
+                link = item.link.text.strip() if item.link else ""
+                guid = item.guid.text.strip() if item.guid else link
+                pub_date = item.pubDate.text.strip() if item.pubDate else ""
+                items.append({"id": guid, "title": title, "link": link, "date": pub_date})
+    except Exception as e:
+        print(f"Errore lettura Novità: {e}")
+    return items
 
-
-def leggi(tipo, url):
-    return leggi_feed(url) if tipo == "feed" else leggi_nuvola(url)
-
-
-def invia(testo):
-    r = requests.post(
-        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": testo, "disable_web_page_preview": "true"},
-        timeout=20,
-    )
-    r.raise_for_status()
-
+def fetch_nuvola_bacheca(category_id, name_prefix):
+    items = []
+    # Endpoint di ricerca per recuperare l'elenco della bacheca Nuvola
+    url = f"https://nuvola.madisoft.it/bacheca-digitale/ricerca/MIIC8GH008/{category_id}/show"
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            
+            # Cerca i link alle singole comunicazioni Nuvola
+            for a in soup.find_all('a', href=True):
+                href = a['href']
+                if f"/bacheca-digitale/bacheca/MIIC8GH008/{category_id}/" in href:
+                    item_id = href.split("?")[0]
+                    title = a.get_text(strip=True)
+                    if title and len(title) > 5:
+                        full_link = href if href.startswith("http") else f"https://nuvola.madisoft.it{href}"
+                        items.append({"id": item_id, "title": title, "link": full_link, "date": ""})
+                        
+    except Exception as e:
+        print(f"Errore lettura {name_prefix}: {e}")
+    
+    # Rimuove eventuali duplicati mantenendo l'ordine
+    unique_items = {}
+    for item in items:
+        if item["id"] not in unique_items:
+            unique_items[item["id"]] = item
+            
+    return list(unique_items.values())
 
 def main():
-    stato = json.loads(STATO.read_text()) if STATO.exists() else {}
+    state = load_state()
+    sources = {
+        "novita": {"name": "📰 Novità", "fetch": fetch_novita},
+        "albo": {"name": "📌 Albo online", "fetch": lambda: fetch_nuvola_bacheca("1", "Albo online")},
+        "pn": {"name": "📌 PN Scuola e Competenze", "fetch": lambda: fetch_nuvola_bacheca("4", "PN Scuola")},
+        "circolari": {"name": "📢 Circolari", "fetch": lambda: fetch_nuvola_bacheca("5", "Circolari")}
+    }
 
-    for nome, tipo, url in FONTI:
-        try:
-            voci = leggi(tipo, url)
-        except Exception as e:
-            print(f"[{nome}] errore: {e}")
-            continue
-        if not voci:
-            print(f"[{nome}] nessun elemento letto: controlla se il layout è cambiato")
-            continue
+    for key, src in sources.items():
+        if key not in state:
+            state[key] = []
+        
+        known_ids = set(state[key])
+        items = src["fetch"]()
+        
+        new_items = [item for item in items if item["id"] not in known_ids]
+        
+        print(f"[{src['name']}] letti {len(items)}, inviati {len(new_items)}")
 
-        visti = set(stato.get(nome, {}).get("visti", []))
-        primo_giro = nome not in stato          # al primo giro non invia nulla
-        nuove = [v for v in voci if v[0] not in visti]
+        # Se è il primo avvio in assoluto per questa fonte, salva la lista senza inviare notifiche (evita notifiche massive)
+        is_first_run = len(known_ids) == 0 and len(state[key]) == 0
 
-        if not primo_giro:
-            for chiave, testo in reversed(nuove):   # dalla più vecchia alla più recente
-                invia(f"{nome}\n{testo}")
-                time.sleep(1)
+        for item in reversed(new_items):
+            if not is_first_run:
+                msg = f"<b>{src['name']}</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
+                send_telegram_message(msg)
+            state[key].append(item["id"])
 
-        stato[nome] = {"visti": sorted(visti | {v[0] for v in voci})}
-        print(f"[{nome}] letti {len(voci)}, inviati {0 if primo_giro else len(nuove)}")
-
-    STATO.write_text(json.dumps(stato, ensure_ascii=False, indent=1))
-
+    save_state(state)
 
 if __name__ == "__main__":
     main()
