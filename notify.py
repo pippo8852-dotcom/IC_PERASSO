@@ -55,8 +55,13 @@ def fetch_pn():
             soup = BeautifulSoup(resp.text, "html.parser")
             for a in soup.find_all('a', href=True):
                 href = a['href']
-                # Cattura i link dei singoli documenti PN (gestendo sia /documento/ che /IN_PUBBLICAZIONE/)
-                if "/bacheca-digitale/" in href and (("/documento/" in href) or ("/IN_PUBBLICAZIONE/" in href)):
+                
+                # Cerchiamo specificamente i link che contengono /documento/ o /IN_PUBBLICAZIONE/
+                if "/bacheca-digitale/" in href and ("/documento/" in href or "/IN_PUBBLICAZIONE/" in href):
+                    # Escludiamo eventuali link di ricerca o di navigazione generale
+                    if "ricerca" in href or href.endswith("/show") or href.endswith("/show/"):
+                        continue
+                        
                     title = a.get_text(strip=True)
                     if title and len(title) > 5 and "torna" not in title.lower() and "oggetto" not in title.lower() and "ricerca" not in title.lower():
                         item_id = href.split("?")[0]
