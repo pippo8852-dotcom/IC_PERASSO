@@ -397,6 +397,112 @@ class FetchNovitaTests(unittest.TestCase):
                          len(notify.FEED_URLS) * (notify.FEED_ATTEMPTS - 1))
 
 
+class DateHelpersTests(unittest.TestCase):
+    def test_rss_date_utc_is_converted_to_italian_summer_time(self):
+        self.assertEqual(notify.parse_feed_date("Sat, 10 Oct 2026 10:30:00 +0000"),
+                         "10/10/2026 12:30")
+
+    def test_rss_date_utc_is_converted_to_italian_winter_time(self):
+        self.assertEqual(notify.parse_feed_date("Mon, 12 Jan 2026 10:30:00 +0000"),
+                         "12/01/2026 11:30")
+
+    def test_rss_date_with_offset(self):
+        self.assertEqual(notify.parse_feed_date("Sat, 10 Oct 2026 12:30:00 +0200"),
+                         "10/10/2026 12:30")
+
+    def test_atom_iso_date_with_z(self):
+        self.assertEqual(notify.parse_feed_date("2026-10-10T10:30:00Z"), "10/10/2026 12:30")
+
+    def test_atom_iso_date_with_offset(self):
+        self.assertEqual(notify.parse_feed_date("2026-10-10T12:30:00+02:00"),
+                         "10/10/2026 12:30")
+
+    def test_invalid_or_empty_feed_date_returns_none(self):
+        for value in (None, "", "   ", "ieri sera", "32 Foo 2026"):
+            self.assertIsNone(notify.parse_feed_date(value), value)
+
+    def test_text_date_with_time(self):
+        self.assertEqual(notify.extract_date_from_text("Circolare 5 pubblicata il 05/10/2026 alle 09:30"),
+                         "05/10/2026 09:30")
+
+    def test_text_date_with_dot_time(self):
+        self.assertEqual(notify.extract_date_from_text("5/10/2026 ore 9.05"), "05/10/2026 09:05")
+
+    def test_text_date_without_time(self):
+        self.assertEqual(notify.extract_date_from_text("Avviso del 5/10/2026 per le famiglie"),
+                         "05/10/2026")
+
+    def test_text_without_date_returns_none(self):
+        self.assertIsNone(notify.extract_date_from_text("Avviso senza data"))
+        self.assertIsNone(notify.extract_date_from_text(""))
+        self.assertIsNone(notify.extract_date_from_text(None))
+
+    def test_text_with_impossible_date_returns_none(self):
+        self.assertIsNone(notify.extract_date_from_text("Scadenza 31/02/2026"))
+
+    def test_text_with_invalid_time_keeps_only_date(self):
+        self.assertEqual(notify.extract_date_from_text("05/10/2026 ore 25:99"), "05/10/2026")
+
+
+class FeedDateTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch("notify.time.sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fetch(self, xml):
+        with mock.patch("notify.requests.get", return_value=make_response(200, xml)):
+            return notify.fetch_novita()
+
+    def test_rss_pubdate_is_read(self):
+        xml = ("<rss><channel><item><title>A</title><link>https://x.it/a</link>"
+               "<pubDate>Sat, 10 Oct 2026 10:30:00 +0000</pubDate></item></channel></rss>")
+        self.assertEqual(self.fetch(xml)[0]["date"], "10/10/2026 12:30")
+
+    def test_atom_published_is_read(self):
+        xml = ('<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>A</title>'
+               '<link href="https://x.it/a"/><published>2026-10-10T10:30:00Z</published>'
+               '</entry></feed>')
+        self.assertEqual(self.fetch(xml)[0]["date"], "10/10/2026 12:30")
+
+    def test_atom_falls_back_to_updated(self):
+        xml = ('<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>A</title>'
+               '<link href="https://x.it/a"/><updated>2026-10-10T10:30:00Z</updated>'
+               '</entry></feed>')
+        self.assertEqual(self.fetch(xml)[0]["date"], "10/10/2026 12:30")
+
+    def test_missing_date_gives_none(self):
+        xml = ("<rss><channel><item><title>A</title><link>https://x.it/a</link>"
+               "</item></channel></rss>")
+        self.assertIsNone(self.fetch(xml)[0]["date"])
+
+    def test_unreadable_date_gives_none(self):
+        xml = ("<rss><channel><item><title>A</title><link>https://x.it/a</link>"
+               "<pubDate>boh</pubDate></item></channel></rss>")
+        self.assertIsNone(self.fetch(xml)[0]["date"])
+
+
+class PnDateTests(unittest.TestCase):
+    def fetch(self, html_text):
+        with mock.patch("notify.requests.get", return_value=make_response(200, html_text)):
+            return notify.fetch_pn()
+
+    def test_date_and_time_taken_from_row_text(self):
+        html_text = table_html(
+            "<td>Circolare 5</td><td>Pubblicata il 05/10/2026 alle 09:30</td>"
+            "<td><a href='/bacheca-digitale/111/x'>Apri</a></td>")
+        self.assertEqual(self.fetch(html_text)[0]["date"], "05/10/2026 09:30")
+
+    def test_row_without_date_has_none(self):
+        html_text = table_html(
+            "<td>Circolare</td><td><a href='/bacheca-digitale/111/x'>Apri</a></td>")
+        self.assertIsNone(self.fetch(html_text)[0]["date"])
+
+    def test_fallback_items_have_no_date(self):
+        html_text = "<html><body><a href='/bacheca-digitale/41/x'>A</a></body></html>"
+        self.assertIsNone(self.fetch(html_text)[0]["date"])
+
+
 class MainTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -540,6 +646,22 @@ class MainTests(unittest.TestCase):
         state = self.read_state()
         self.assertEqual(state["bacheca_8"], [])
         self.assertEqual(state["feed_icperasso"], ["g1"])
+
+    def test_message_contains_date_line_when_available(self):
+        item = dict(self.item(1), date="10/10/2026 12:30")
+        send = self.run_main([item])
+        msg = send.call_args.args[0]
+        self.assertTrue(msg.endswith("\n🗓 10/10/2026 12:30"))
+
+    def test_message_has_no_date_line_when_missing(self):
+        send = self.run_main([self.item(1)])
+        self.assertNotIn("🗓", send.call_args.args[0])
+
+    def test_feed_message_contains_date_line(self):
+        feed = [{"id": "g1", "title": "Notizia", "link": "https://x.it/n",
+                 "date": "10/10/2026 12:30"}]
+        send = self.run_main([], feed_items=feed, feed_enabled=True)
+        self.assertIn("🗓 10/10/2026 12:30", send.call_args.args[0])
 
     def test_special_characters_in_title_and_link_are_escaped(self):
         feed = [{"id": "g1", "title": "Open day <2026> & iscrizioni",
