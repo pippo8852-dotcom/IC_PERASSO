@@ -3,6 +3,9 @@ import json
 import re
 import html
 import time
+from datetime import datetime
+from email.utils import parsedate_to_datetime
+from zoneinfo import ZoneInfo
 import xml.etree.ElementTree as ET
 import requests
 from bs4 import BeautifulSoup
@@ -28,6 +31,49 @@ FEED_HEADERS = {
     "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
 }
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
+
+LOCAL_TZ_NAME = "Europe/Rome"
+DATE_RE = re.compile(
+    r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b(?:[^\d]{0,12}?(\d{1,2})[:.](\d{2})\b)?"
+)
+
+def format_local(dt):
+    """Formatta una data come gg/mm/aaaa HH:MM, convertita all'ora italiana se ha il fuso."""
+    if dt.tzinfo is not None:
+        try:
+            dt = dt.astimezone(ZoneInfo(LOCAL_TZ_NAME))
+        except Exception:
+            pass
+    return dt.strftime("%d/%m/%Y %H:%M")
+
+def parse_feed_date(text):
+    """Legge la data di un feed (RSS: RFC 822, Atom: ISO 8601). None se assente o illeggibile."""
+    if not text or not text.strip():
+        return None
+    text = text.strip()
+    try:
+        return format_local(parsedate_to_datetime(text))
+    except (TypeError, ValueError):
+        pass
+    try:
+        return format_local(datetime.fromisoformat(text.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+def extract_date_from_text(text):
+    """Cerca la prima data gg/mm/aaaa (con orario facoltativo) in un testo. None se non c'è."""
+    match = DATE_RE.search(text or "")
+    if not match:
+        return None
+    day, month, year, hour, minute = match.groups()
+    try:
+        datetime(int(year), int(month), int(day))
+    except ValueError:
+        return None
+    result = f"{int(day):02d}/{int(month):02d}/{year}"
+    if hour is not None and int(hour) < 24 and int(minute) < 60:
+        result += f" {int(hour):02d}:{minute}"
+    return result
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -102,7 +148,8 @@ def fetch_pn():
                             clean_title = clean_title[:197] + "..."
                             
                         direct_link = f"https://nuvola.madisoft.it/bacheca-digitale/{doc_id}/documento/MIIC8GH008"
-                        items.append({"id": doc_id, "title": clean_title, "link": direct_link})
+                        items.append({"id": doc_id, "title": clean_title, "link": direct_link,
+                                      "date": extract_date_from_text(title)})
                         break # Un solo ID valido per riga
 
             # Fallback nel caso la struttura non usi tag <tr>
@@ -115,7 +162,7 @@ def fetch_pn():
                         doc_id = match.group(1)
                         title = a.get_text(strip=True) or f"Comunicazione PN {doc_id}"
                         direct_link = f"https://nuvola.madisoft.it/bacheca-digitale/{doc_id}/documento/MIIC8GH008"
-                        items.append({"id": doc_id, "title": title, "link": direct_link})
+                        items.append({"id": doc_id, "title": title, "link": direct_link, "date": None})
 
     except Exception as e:
         print(f"❌ Errore durante la lettura della bacheca PN: {e}")
@@ -188,8 +235,11 @@ def fetch_novita(urls=None):
         if len(title) > 200:
             title = title[:197] + "..."
 
+        date_node = _child(entry, "pubDate", f"{ATOM_NS}published", f"{ATOM_NS}updated")
+        date = parse_feed_date(date_node.text) if date_node is not None else None
+
         if item_id not in unique_items:
-            unique_items[item_id] = {"id": item_id, "title": title, "link": link}
+            unique_items[item_id] = {"id": item_id, "title": title, "link": link, "date": date}
 
     print(f"📋 Notizie uniche nel feed: {len(unique_items)}")
     return list(unique_items.values())
@@ -219,7 +269,8 @@ def process_source(state, source):
         # farebbe rifiutare il messaggio da Telegram.
         title = html.escape(item["title"], quote=False)
         link = html.escape(item["link"], quote=True)
-        msg = f"<b>{source['label']}</b>\n\n<a href='{link}'>{title}</a>"
+        date_line = f"\n🗓 {html.escape(item['date'])}" if item.get("date") else ""
+        msg = f"<b>{source['label']}</b>\n\n<a href='{link}'>{title}</a>{date_line}"
         if send_telegram_message(msg):
             state[key].append(item["id"])
         else:
