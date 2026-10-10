@@ -61,6 +61,67 @@ class StateTests(unittest.TestCase):
 
 
 class SendTelegramTests(unittest.TestCase):
+    def setUp(self):
+        sleep_patcher = mock.patch("notify.time.sleep")
+        self.sleep = sleep_patcher.start()
+        self.addCleanup(sleep_patcher.stop)
+        for name, value in (("TELEGRAM_TOKEN", "tok"), ("TELEGRAM_CHAT_ID", "123")):
+            patcher = mock.patch.object(notify, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def too_many(retry_after=2):
+        resp = make_response(429)
+        resp.json.return_value = {"ok": False, "parameters": {"retry_after": retry_after}}
+        resp.raise_for_status.side_effect = requests.HTTPError("429 Too Many Requests")
+        return resp
+
+    def test_429_waits_retry_after_and_then_succeeds(self):
+        with mock.patch("notify.requests.post",
+                        side_effect=[self.too_many(2), make_response()]) as post:
+            self.assertIs(notify.send_telegram_message("ciao"), True)
+        self.assertEqual(post.call_count, 2)
+        self.sleep.assert_called_once_with(3)  # retry_after + 1
+
+    def test_429_uses_retry_after_header_when_body_has_none(self):
+        resp = make_response(429)
+        resp.json.side_effect = ValueError("no json")
+        resp.headers = {"Retry-After": "4"}
+        with mock.patch("notify.requests.post", side_effect=[resp, make_response()]):
+            self.assertIs(notify.send_telegram_message("ciao"), True)
+        self.sleep.assert_called_once_with(5)
+
+    def test_429_without_indication_waits_default(self):
+        resp = make_response(429)
+        resp.json.side_effect = ValueError("no json")
+        resp.headers = {}
+        with mock.patch("notify.requests.post", side_effect=[resp, make_response()]):
+            self.assertIs(notify.send_telegram_message("ciao"), True)
+        self.sleep.assert_called_once_with(6)
+
+    def test_429_with_very_long_wait_gives_up_without_sleeping(self):
+        with mock.patch("notify.requests.post",
+                        return_value=self.too_many(300)) as post:
+            self.assertIs(notify.send_telegram_message("ciao"), False)
+        self.assertEqual(post.call_count, 1)
+        self.sleep.assert_not_called()
+
+    def test_429_every_time_stops_after_max_attempts(self):
+        with mock.patch("notify.requests.post",
+                        return_value=self.too_many(1)) as post:
+            self.assertIs(notify.send_telegram_message("ciao"), False)
+        self.assertEqual(post.call_count, notify.MAX_SEND_ATTEMPTS)
+        self.assertEqual(self.sleep.call_count, notify.MAX_SEND_ATTEMPTS - 1)
+
+    def test_other_http_errors_are_not_retried(self):
+        resp = make_response(400)
+        resp.raise_for_status.side_effect = requests.HTTPError("400")
+        with mock.patch("notify.requests.post", return_value=resp) as post:
+            self.assertIs(notify.send_telegram_message("ciao"), False)
+        self.assertEqual(post.call_count, 1)
+        self.sleep.assert_not_called()
+
     def test_missing_token_does_not_call_api(self):
         with mock.patch.object(notify, "TELEGRAM_TOKEN", None), \
              mock.patch.object(notify, "TELEGRAM_CHAT_ID", "123"), \
@@ -505,6 +566,9 @@ class PnDateTests(unittest.TestCase):
 
 class MainTests(unittest.TestCase):
     def setUp(self):
+        sleep_patcher = mock.patch("notify.time.sleep")
+        self.sleep = sleep_patcher.start()
+        self.addCleanup(sleep_patcher.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = os.path.join(self.tmp.name, "state.json")
@@ -680,6 +744,15 @@ class MainTests(unittest.TestCase):
                         side_effect=results) as send:
             notify.main()
         return send
+
+    def test_pause_between_messages_but_not_before_first_or_after_last(self):
+        self.run_main([self.item(3), self.item(2), self.item(1)])
+        self.assertEqual(self.sleep.call_count, 2)
+        self.sleep.assert_called_with(notify.SEND_DELAY)
+
+    def test_single_message_has_no_pause(self):
+        self.run_main([self.item(1)])
+        self.sleep.assert_not_called()
 
     def test_failed_send_is_not_saved_in_state(self):
         send = self.run_main_with_send_results([self.item(1)], [False])
