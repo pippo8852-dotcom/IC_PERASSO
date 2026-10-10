@@ -71,13 +71,15 @@ def fetch_nuvola_bacheca(category_id, name_prefix):
             soup = BeautifulSoup(resp.text, "html.parser")
             for a in soup.find_all('a', href=True):
                 href = a['href']
-                # Filtriamo rigorosamente solo i link agli atti specifici (escludendo ricerca e archivi)
-                if "/bacheca-digitale/bacheca/MIIC8GH008/" in href and ("/show" in href or "/download" in href):
-                    if "ricerca" in href or "ARCHIVIATI" in href:
+                
+                # FILTRO RIGOROSO: vogliamo SOLO i link dei singoli atti, escludendo /ricerca/ e /show finali generici
+                if f"/bacheca-digitale/bacheca/MIIC8GH008/{category_id}/" in href:
+                    if "ricerca" in href or href.endswith(f"/{category_id}/show") or href.endswith(f"/{category_id}/show/"):
                         continue
                         
                     title = a.get_text(strip=True)
-                    if title and len(title) > 4 and "torna" not in title.lower() and "oggetto" not in title.lower():
+                    # Verifichiamo che il titolo sia valido e non un'etichetta di navigazione
+                    if title and len(title) > 5 and "torna" not in title.lower() and "oggetto" not in title.lower() and "ricerca" not in title.lower():
                         item_id = href.split("?")[0]
                         full_link = href if href.startswith("http") else f"https://nuvola.madisoft.it{href}"
                         items.append({"id": item_id, "title": title, "link": full_link})
@@ -95,7 +97,7 @@ def main():
     sources = {
         "novita": {"name": "📰 Novità", "fetch": fetch_novita},
         "albo": {"name": "📌 Albo online", "fetch": lambda: fetch_nuvola_bacheca("1", "Albo online")},
-        "bacheca_8": {"name": "📌 PN / Comunicazioni", "fetch": lambda: fetch_nuvola_bacheca("8", "Bacheca 8")}
+        "bacheca_8": {"name": "📌 Comunicazioni (Cat. 8)", "fetch": lambda: fetch_nuvola_bacheca("8", "Bacheca 8")}
     }
 
     for key, src in sources.items():
@@ -109,7 +111,6 @@ def main():
         
         print(f"[{src['name']}] Letti {len(items)}, Nuovi effettivi {len(new_items)}")
 
-        # Pubblica i nuovi elementi trovati
         for item in reversed(new_items):
             msg = f"<b>{src['name']} IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
             send_telegram_message(msg)
