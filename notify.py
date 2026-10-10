@@ -55,11 +55,8 @@ def fetch_albo():
             soup = BeautifulSoup(resp.text, "html.parser")
             for a in soup.find_all('a', href=True):
                 href = a['href']
-                # Filtriamo rigorosamente solo i link ai singoli atti dell'albo
-                if f"/bacheca-digitale/bacheca/MIIC8GH008/{category_id}/" in href:
-                    if "ricerca" in href or href.endswith(f"/{category_id}/show") or href.endswith(f"/{category_id}/show/"):
-                        continue
-                        
+                # Prendiamo solo i link diretti agli atti specifici
+                if "/bacheca-digitale/bacheca/MIIC8GH008/" in href and "/IN_PUBBLICAZIONE/" in href:
                     title = a.get_text(strip=True)
                     if title and len(title) > 5 and "torna" not in title.lower() and "oggetto" not in title.lower() and "ricerca" not in title.lower():
                         item_id = href.split("?")[0]
@@ -86,14 +83,12 @@ def main():
     
     new_items = [item for item in items if item["id"] not in known_ids]
     
-    print(f"[📌 Albo online] Letti {len(items)}, Nuovi effettivi {len(new_items)}")
+    print(f"[📌 Albo online] Letti {len(items)}, Nuovi da inviare {len(new_items)}")
 
-    is_first_run = len(known_ids) == 0 and len(state[key]) == 0
-
+    # Invia tutti i nuovi elementi trovati senza blocchi
     for item in reversed(new_items):
-        if not is_first_run:
-            msg = f"<b>📌 Albo online IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
-            send_telegram_message(msg)
+        msg = f"<b>📌 Albo online IC Perasso</b>\n\n<a href='{item['link']}'>{item['title']}</a>"
+        send_telegram_message(msg)
         state[key].append(item["id"])
 
     save_state(state)
