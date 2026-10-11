@@ -2,7 +2,7 @@ name: Controlla novità IC Perasso
 
 on:
   schedule:
-  - cron: '0 4-20 * * *' # Ogni ora dalle 6 alle 22 (ora italiana legale)
+  - cron: '0 5-20 * * 1-5'   # ogni ora, 7-22 ora italiana (ora legale), da lunedì a venerdì
   workflow_dispatch: # Permette l'esecuzione manuale da Actions
 
 permissions:
