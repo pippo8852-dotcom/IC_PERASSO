@@ -359,7 +359,7 @@ def fetch_novita():
 SOURCES = [
     {"key": "bacheca_8", "label": "📌 PN / Comunicazioni IC Perasso",
      "link_label": "🔗 Apri il documento",
-     "fetch": lambda: fetch_pn(), "enabled": True},
+     "fetch": lambda: fetch_pn(), "enabled": False},
     # Novità del sito: per disattivarle basta mettere "enabled": False
     {"key": "feed_icperasso", "label": "📰 News IC Perasso",
      "link_label": "🔗 Leggi la notizia",
