@@ -301,6 +301,50 @@ class FetchPnTests(unittest.TestCase):
         self.assertEqual(self.fetch(""), [])
 
 
+class FetchAvvisiFamiglieTests(unittest.TestCase):
+    """Stessa logica del PN (fetch_bacheca), ma sulla categoria 5 invece che 8."""
+
+    def fetch(self, html, status=200):
+        with mock.patch("notify.requests.get",
+                        return_value=make_response(status, html)):
+            return notify.fetch_avvisi_famiglie()
+
+    def test_request_uses_category_5_not_8(self):
+        with mock.patch("notify.requests.get",
+                        return_value=make_response(200, "<html></html>")) as get:
+            notify.fetch_avvisi_famiglie()
+        args, kwargs = get.call_args
+        self.assertEqual(
+            args[0],
+            "https://nuvola.madisoft.it/bacheca-digitale/bacheca/ricerca/MIIC8GH008/5/show",
+        )
+        self.assertIn("User-Agent", kwargs["headers"])
+
+    def test_happy_path_extracts_items_from_table_rows(self):
+        html = table_html(
+            "<td>Avviso famiglie 1</td><td><a href='/bacheca-digitale/301/dettaglio'>Apri</a></td>",
+        )
+        items = self.fetch(html)
+        self.assertEqual([i["id"] for i in items], ["301"])
+        self.assertEqual(
+            items[0]["link"],
+            "https://nuvola.madisoft.it/bacheca-digitale/301/documento/MIIC8GH008",
+        )
+
+    def test_fetch_pn_and_fetch_avvisi_famiglie_use_different_categories(self):
+        # Le due funzioni condividono la stessa logica (fetch_bacheca): verifichiamo
+        # che restino comunque indipendenti, con l'ID di categoria giusto ciascuna.
+        with mock.patch("notify.requests.get",
+                        return_value=make_response(200, "<html></html>")) as get:
+            notify.fetch_pn()
+            notify.fetch_avvisi_famiglie()
+        url_pn = get.call_args_list[0][0][0]
+        url_avvisi = get.call_args_list[1][0][0]
+        self.assertIn("/8/show", url_pn)
+        self.assertIn("/5/show", url_avvisi)
+        self.assertNotEqual(url_pn, url_avvisi)
+
+
 
 RSS_SAMPLE = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"
@@ -775,8 +819,17 @@ class MainTests(unittest.TestCase):
         }
 
     def run_main(self, items, feed_items=None, feed_enabled=False):
-        sources = [dict(src, enabled=True) for src in notify.SOURCES] if feed_enabled \
-            else notify.SOURCES
+        # bacheca_8 è disattivata di default nello script, ma questi test ne verificano
+        # il comportamento generico del ciclo principale (ordine, pause, stato):
+        # qui viene riattivata solo per la prova, indipendentemente dal default spedito.
+        sources = []
+        for src in notify.SOURCES:
+            src = dict(src)
+            if src["key"] == "bacheca_8":
+                src["enabled"] = True
+            elif src["key"] == "feed_icperasso":
+                src["enabled"] = feed_enabled
+            sources.append(src)
         with mock.patch("notify.fetch_pn", return_value=items), \
              mock.patch("notify.fetch_novita", return_value=feed_items or []), \
              mock.patch.object(notify, "SOURCES", sources), \
@@ -843,10 +896,11 @@ class MainTests(unittest.TestCase):
         send = self.run_main([self.item(1)])
         self.assertEqual(send.call_count, 1)
 
-    def test_all_sources_are_enabled_by_default(self):
-        self.assertTrue(all(s.get("enabled", True) for s in notify.SOURCES))
-        self.assertEqual({s["key"] for s in notify.SOURCES},
-                         {"bacheca_8", "feed_icperasso"})
+    def test_sources_have_the_expected_default_state(self):
+        # bacheca_8 (PN) è disattivata su richiesta; Novità e Avvisi famiglie restano attivi.
+        stato_atteso = {"bacheca_8": False, "feed_icperasso": True, "bacheca_5": True}
+        stato_reale = {s["key"]: s.get("enabled", True) for s in notify.SOURCES}
+        self.assertEqual(stato_reale, stato_atteso)
 
     def test_disabled_feed_is_not_fetched_nor_sent_nor_saved(self):
         feed = [{"id": "g1", "title": "Notizia", "link": "https://x.it/n"}]
@@ -951,8 +1005,17 @@ class MainTests(unittest.TestCase):
         self.assertIn("href='https://x.it/n?a=1&amp;b=2'", msg)
 
     def run_main_with_send_results(self, items, results):
+        sources = []
+        for src in notify.SOURCES:
+            src = dict(src)
+            if src["key"] == "bacheca_8":
+                src["enabled"] = True
+            elif src["key"] == "feed_icperasso":
+                src["enabled"] = False
+            sources.append(src)
         with mock.patch("notify.fetch_pn", return_value=items), \
              mock.patch("notify.fetch_novita", return_value=[]), \
+             mock.patch.object(notify, "SOURCES", sources), \
              mock.patch("notify.send_telegram_message",
                         side_effect=results) as send:
             notify.main()
